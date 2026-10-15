@@ -3186,7 +3186,8 @@ EOF
 ### Task 13: Docker, Render and README
 
 **Files:**
-- Create: `Dockerfile`, `.dockerignore`, `render.yaml`, `README.md`
+- Create: `Dockerfile`, `.dockerignore`, `render.yaml`
+- Modify: `README.md` (already exists with the local-run instructions; replace it wholesale with the version below, which keeps them)
 
 - [ ] **Step 1: Docker**
 
@@ -3326,6 +3327,15 @@ cd frontend && npm install && npm test && npm run dev
 ```
 
 Open the Vite URL; `/api` is proxied to port 8000.
+
+Or run the deployed image locally:
+
+```bash
+docker build -t sim-scene-review .
+docker run --rm -p 8000:8000 sim-scene-review
+```
+
+Then open `http://localhost:8000`.
 
 ## Deploy
 
