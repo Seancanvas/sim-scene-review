@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyReview, beginRun, fromSnapshot, initialState, recordAppliedFix, reduceEvent, select } from "./reducer";
+import { applyReview, beginRun, fromSnapshot, initialState, recordAppliedFix, reduceEvent, select, setPendingFix } from "./reducer";
 import type { Finding, Metrics, Snapshot } from "./types";
 
 const metrics: Metrics = { time_to_usable_s: null, manual_fixes: 0, reruns: 0, cost: 0, saved_by_idempotency: 0 };
@@ -7,6 +7,7 @@ const snapshot: Snapshot = {
   scene_id: "scn_1",
   version: "v1",
   current_run_id: null,
+  current_run_done: true,
   objects: [
     { name: "table", movable: false, status: "pending", decision: "pending", findings: [] },
     { name: "mug", movable: true, status: "pending", decision: "pending", findings: [] },
@@ -23,17 +24,16 @@ describe("reducer", () => {
     expect(s.order).toEqual(["table", "mug"]);
     expect(s.metrics).toEqual(metrics);
     expect(s.running).toBe(false);
+    expect(s.version).toBe("v1");
   });
 
   it("hydrates a scene whose run is still going as running, so the stream resumes", () => {
-    const mid: Snapshot = {
-      ...snapshot,
-      current_run_id: "run_9",
-      objects: snapshot.objects.map((o) => ({ ...o, status: "checking" as const })),
-    };
+    // still compiling: no object is "checking" yet, only the run flag says it is live
+    const mid: Snapshot = { ...snapshot, current_run_id: "run_9", current_run_done: false };
     const s = fromSnapshot(mid);
     expect(s.running).toBe(true);
     expect(s.runId).toBe("run_9");
+    expect(fromSnapshot({ ...mid, current_run_done: true }).running).toBe(false);
   });
 
   it("beginRun for a full run clears every object's findings", () => {
@@ -107,21 +107,36 @@ describe("reducer", () => {
 
   const fix = { fix_id: "f1", label: "Lift" };
 
-  it("recordAppliedFix records a fix", () => {
-    const s = recordAppliedFix(initialState(), "mug", fix);
-    expect(s.appliedFixes.mug).toEqual([fix]);
+  it("recordAppliedFix records a fix with the version it produced", () => {
+    const s = recordAppliedFix(initialState(), "mug", fix, "v2");
+    expect(s.appliedFixes.mug).toEqual([{ fix, version: "v2" }]);
   });
 
-  it("recordAppliedFix ignores a repeated fix_id", () => {
-    let s = recordAppliedFix(initialState(), "mug", fix);
-    s = recordAppliedFix(s, "mug", fix);
+  it("recordAppliedFix keeps one entry per fix_id", () => {
+    let s = recordAppliedFix(initialState(), "mug", fix, "v2");
+    s = recordAppliedFix(s, "mug", fix, "v2");
     expect(s.appliedFixes.mug).toHaveLength(1);
   });
 
+  it("recordAppliedFix moves a re-recorded fix to the new version", () => {
+    let s = recordAppliedFix(initialState(), "mug", fix, "v2");
+    s = recordAppliedFix(s, "mug", { fix_id: "f2", label: "Move" }, "v3");
+    s = recordAppliedFix(s, "mug", fix, "v4");
+    expect(s.appliedFixes.mug).toEqual([{ fix, version: "v4" }, { fix: { fix_id: "f2", label: "Move" }, version: "v3" }]);
+  });
+
   it("recordAppliedFix keeps objects separate", () => {
-    let s = recordAppliedFix(initialState(), "mug", fix);
-    s = recordAppliedFix(s, "plate", { fix_id: "f2", label: "Move" });
-    expect(s.appliedFixes.mug).toEqual([fix]);
-    expect(s.appliedFixes.plate).toEqual([{ fix_id: "f2", label: "Move" }]);
+    let s = recordAppliedFix(initialState(), "mug", fix, "v2");
+    s = recordAppliedFix(s, "plate", { fix_id: "f2", label: "Move" }, "v2");
+    expect(s.appliedFixes.mug).toEqual([{ fix, version: "v2" }]);
+    expect(s.appliedFixes.plate).toEqual([{ fix: { fix_id: "f2", label: "Move" }, version: "v2" }]);
+  });
+
+  it("setPendingFix stores and clears the fix whose run is in flight", () => {
+    let s = setPendingFix(initialState(), { object: "mug", fix });
+    expect(s.pendingFix).toEqual({ object: "mug", fix });
+    expect(s.appliedFixes).toEqual({});
+    s = setPendingFix(s, null);
+    expect(s.pendingFix).toBeNull();
   });
 });

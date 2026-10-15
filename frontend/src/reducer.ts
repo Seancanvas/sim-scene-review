@@ -6,20 +6,23 @@ const freshStages = (): Record<Stage, StageView> =>
 
 export function initialState(): ViewState {
   return {
-    sceneId: null, runId: null, running: false, stages: freshStages(),
-    objects: {}, order: [], geometry: [], metrics: null, error: null, selected: null, appliedFixes: {},
+    sceneId: null, version: null, runId: null, running: false, stages: freshStages(),
+    objects: {}, order: [], geometry: [], metrics: null, error: null, selected: null,
+    appliedFixes: {}, pendingFix: null,
   };
 }
 
-/** A snapshot taken mid-run has objects still "checking"; treat the scene as
- * running so the page resubscribes to the run's stream after a reload. The
+/** A snapshot taken mid-run reports its run as not done; treat the scene as
+ * running so the page resubscribes to the run's stream after a reload, even
+ * while the run is still compiling and no object is "checking" yet. The
  * server replays every event; the pipeline clears an object's findings the
  * moment it goes back to "checking", so nothing is counted twice. */
 export function fromSnapshot(snapshot: Snapshot): ViewState {
-  const running = snapshot.current_run_id !== null && snapshot.objects.some((o) => o.status === "checking");
+  const running = snapshot.current_run_id !== null && !snapshot.current_run_done;
   return {
     ...initialState(),
     sceneId: snapshot.scene_id,
+    version: snapshot.version,
     runId: snapshot.current_run_id,
     running,
     objects: Object.fromEntries(snapshot.objects.map((o) => [o.name, o])),
@@ -38,11 +41,19 @@ export function beginRun(state: ViewState, runId: string, onlyObject: string | n
   return { ...state, runId, running: true, stages: freshStages(), error: null, objects };
 }
 
-/** Fixes applied in this page session, oldest first, one entry per fix_id. */
-export function recordAppliedFix(state: ViewState, object: string, fix: Fix): ViewState {
+/** Fixes applied in this page session, oldest first, one entry per fix_id.
+ * Applying the same fix again moves its entry to the version it just produced. */
+export function recordAppliedFix(state: ViewState, object: string, fix: Fix, version: string): ViewState {
   const existing = state.appliedFixes[object] ?? [];
-  if (existing.some((f) => f.fix_id === fix.fix_id)) return state;
-  return { ...state, appliedFixes: { ...state.appliedFixes, [object]: [...existing, fix] } };
+  const entry = { fix, version };
+  const applied = existing.some((e) => e.fix.fix_id === fix.fix_id)
+    ? existing.map((e) => (e.fix.fix_id === fix.fix_id ? entry : e))
+    : [...existing, entry];
+  return { ...state, appliedFixes: { ...state.appliedFixes, [object]: applied } };
+}
+
+export function setPendingFix(state: ViewState, pending: { object: string; fix: Fix } | null): ViewState {
+  return { ...state, pendingFix: pending };
 }
 
 export function select(state: ViewState, name: string | null): ViewState {

@@ -35,7 +35,7 @@ function Shape({ geom }: { geom: GeomView }) {
     case "ellipsoid": return <sphereGeometry args={[1, 32, 16]} />;
     case "cylinder": return <cylinderGeometry args={[a, a, 2 * b, 32]} />;
     case "capsule": return <capsuleGeometry args={[a, 2 * b, 4, 16]} />;
-    case "plane": return <planeGeometry args={[a || 20, b || 20]} />;
+    case "plane": return <planeGeometry args={[a ? 2 * a : 20, b ? 2 * b : 20]} />;
     case "mesh": return <MeshGeometry geom={geom} />;
     default: return null;
   }

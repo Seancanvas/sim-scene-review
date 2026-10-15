@@ -8,6 +8,8 @@ export const STAGE_LABELS: Record<Stage, string> = {
 
 export type Severity = "error" | "warning";
 export interface Fix { fix_id: string; label: string }
+/** A fix applied in this page session and the scene version it produced. */
+export interface AppliedFix { fix: Fix; version: string }
 export interface Finding { object: string; rule: string; severity: Severity; message: string; fix: Fix | null }
 
 export type ObjectStatus = "pending" | "checking" | "ok" | "has_issues";
@@ -43,6 +45,7 @@ export interface Snapshot {
   scene_id: string;
   version: string;
   current_run_id: string | null;
+  current_run_done: boolean;
   objects: ObjectView[];
   geometry: GeometryObject[];
   metrics: Metrics;
@@ -53,6 +56,8 @@ export interface StageView { status: StageStatus; durationMs?: number; cost?: nu
 
 export interface ViewState {
   sceneId: string | null;
+  /** scene version from the last snapshot; a Re-apply is only valid at it */
+  version: string | null;
   runId: string | null;
   running: boolean;
   stages: Record<Stage, StageView>;
@@ -63,7 +68,9 @@ export interface ViewState {
   error: string | null;
   selected: string | null;
   /** object name -> fixes applied in this page session, oldest first */
-  appliedFixes: Record<string, Fix[]>;
+  appliedFixes: Record<string, AppliedFix[]>;
+  /** a fix whose run is in flight; recorded with the version the run produces */
+  pendingFix: { object: string; fix: Fix } | null;
 }
 
 export type RunEvent =

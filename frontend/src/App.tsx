@@ -5,7 +5,7 @@ import { ObjectPanel } from "./components/ObjectPanel";
 import { SceneInput } from "./components/SceneInput";
 import { SceneViewport } from "./components/SceneViewport";
 import { StageProgress } from "./components/StageProgress";
-import { applyReview, beginRun, fromSnapshot, initialState, recordAppliedFix, reduceEvent, select } from "./reducer";
+import { applyReview, beginRun, fromSnapshot, initialState, recordAppliedFix, reduceEvent, select, setPendingFix } from "./reducer";
 import type { RunEvent, ViewState } from "./types";
 import { useRunStream } from "./useRunStream";
 
@@ -29,13 +29,36 @@ export default function App() {
   }, [hydrate]);
 
   const onEvent = useCallback(
-    (event: RunEvent) => {
+    (event: RunEvent, runId: string) => {
       setState((s) => reduceEvent(s, event));
       // The run's final state lives on the server; re-read it so decisions and
       // the version are authoritative after every run.
       if (event.type === "run_completed" || event.type === "run_failed") {
         const id = sceneFromHash();
-        if (id) api.snapshot(id).then((snap) => setState((s) => ({ ...fromSnapshot(snap), stages: s.stages, running: false, selected: s.selected, error: s.error, appliedFixes: s.appliedFixes }))).catch(() => undefined);
+        if (id)
+          api
+            .snapshot(id)
+            .then((snap) =>
+              setState((s) => {
+                // a newer run or another scene took over while this snapshot was in flight
+                if (s.runId !== runId) return s;
+                // the fix's run finished, so now it is known which version it produced
+                const settled =
+                  event.type === "run_completed" && s.pendingFix
+                    ? recordAppliedFix(s, s.pendingFix.object, s.pendingFix.fix, snap.version)
+                    : s;
+                return {
+                  ...fromSnapshot(snap),
+                  stages: s.stages,
+                  running: false,
+                  selected: s.selected,
+                  error: s.error,
+                  appliedFixes: settled.appliedFixes,
+                  pendingFix: null,
+                };
+              }),
+            )
+            .catch(() => undefined);
       }
     },
     [],
@@ -60,9 +83,11 @@ export default function App() {
       .then((r) => {
         if (r.cached) {
           setNotice(`Already applied on this scene version — reusing run ${r.run_id}, nothing charged.`);
-          return api.snapshot(sceneId).then((snap) => setState((s) => ({ ...s, metrics: snap.metrics })));
+          return api
+            .snapshot(sceneId)
+            .then((snap) => setState((s) => (s.sceneId === sceneId ? { ...s, metrics: snap.metrics } : s)));
         }
-        setState((s) => recordAppliedFix(beginRun(s, r.run_id, name), name, fix));
+        setState((s) => setPendingFix(beginRun(s, r.run_id, name), { object: name, fix }));
       })
       .catch((e) => fail(e.message));
   };
@@ -102,6 +127,7 @@ export default function App() {
           onReview={onReview}
           onFix={onFix}
           applied={state.appliedFixes[state.selected ?? ""] ?? []}
+          version={state.version}
         />
       </main>
       <MetricsFooter metrics={state.metrics} />
