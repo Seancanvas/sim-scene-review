@@ -1,0 +1,61 @@
+<mujoco model="tabletop">
+  <!-- Sample scene for Sim-Scene Review. Several objects carry deliberate
+       problems so the checks have something to find; mug_b is the control.
+       tray_mm sits on a second station 200 m away: at 1000x scale it would
+       otherwise swallow the table before you fix it. -->
+  <option timestep="0.002"/>
+  <worldbody>
+    <light pos="0 0 3" dir="0 0 -1"/>
+    <geom name="floor" type="plane" size="3 3 0.1" rgba="0.85 0.85 0.85 1"/>
+
+    <body name="table" pos="0 0 0.72">
+      <geom name="table_top" type="box" size="0.6 0.4 0.02" rgba="0.6 0.4 0.25 1"/>
+      <geom name="leg_1" type="box" size="0.02 0.02 0.35" pos="0.55 0.35 -0.37" rgba="0.5 0.35 0.2 1"/>
+      <geom name="leg_2" type="box" size="0.02 0.02 0.35" pos="-0.55 0.35 -0.37" rgba="0.5 0.35 0.2 1"/>
+      <geom name="leg_3" type="box" size="0.02 0.02 0.35" pos="0.55 -0.35 -0.37" rgba="0.5 0.35 0.2 1"/>
+      <geom name="leg_4" type="box" size="0.02 0.02 0.35" pos="-0.55 -0.35 -0.37" rgba="0.5 0.35 0.2 1"/>
+    </body>
+
+    <!-- mug_a: effectively massless. MuJoCo refuses mass 0 on a moving body,
+         so 1e-7 kg is the smallest value that compiles. -->
+    <body name="mug_a" pos="-0.3 0.1 0.79">
+      <joint type="free"/>
+      <inertial pos="0 0 0" mass="1e-7" diaginertia="1e-10 1e-10 1e-10"/>
+      <geom type="cylinder" size="0.04 0.05" friction="0.9 0.005 0.0001" rgba="0.2 0.5 0.9 1"/>
+    </body>
+
+    <!-- mug_b: the control object, nothing wrong with it -->
+    <body name="mug_b" pos="0.3 0.15 0.79">
+      <joint type="free"/>
+      <geom type="cylinder" size="0.04 0.05" friction="0.9 0.005 0.0001" rgba="0.2 0.7 0.4 1"/>
+    </body>
+
+    <!-- plate: collision disabled -->
+    <body name="plate" pos="0 0 0.75">
+      <joint type="free"/>
+      <geom type="cylinder" size="0.11 0.008" contype="0" conaffinity="0" friction="0.6 0.005 0.0001" rgba="0.95 0.95 0.95 1"/>
+    </body>
+
+    <!-- box_small: starts 2 cm inside the table top, and leaves friction at
+         MuJoCo's default -->
+    <body name="box_small" pos="0.3 -0.2 0.75">
+      <joint type="free"/>
+      <geom type="box" size="0.03 0.03 0.03" rgba="0.9 0.6 0.2 1"/>
+    </body>
+
+    <!-- cabinet_door: hinge with no range -->
+    <body name="cabinet" pos="0.9 0 0.4">
+      <geom type="box" size="0.02 0.25 0.4" rgba="0.5 0.5 0.55 1"/>
+      <body name="cabinet_door" pos="0.04 0.25 0">
+        <joint name="door_hinge" type="hinge" axis="0 0 1" damping="0.5"/>
+        <geom type="box" size="0.01 0.24 0.38" pos="0 -0.24 0" friction="0.5 0.005 0.0001" rgba="0.7 0.7 0.75 1"/>
+      </body>
+    </body>
+
+    <!-- tray_mm: modelled in millimetres (150 x 100 x 5 instead of 0.15 x 0.10 x 0.005) -->
+    <body name="tray_mm" pos="200 0 5">
+      <joint type="free"/>
+      <geom type="box" size="150 100 5" friction="0.7 0.005 0.0001" rgba="0.3 0.3 0.3 1"/>
+    </body>
+  </worldbody>
+</mujoco>

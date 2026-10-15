@@ -60,8 +60,11 @@ Out (listed in the README as next steps):
 - **Movable object**: an object that has a joint on itself or on any ancestor
   body. Mass and friction rules apply only to movable objects; fixed scenery
   such as the table is exempt.
-- **Scene version**: SHA-256 of the current MJCF XML text. Applying a fix
-  produces a new XML text and therefore a new version.
+- **Canonical XML**: the scene as MuJoCo re-serialises it (`MjSpec.to_xml()`)
+  after every unnamed body has been given a stable name. Uploads are
+  canonicalised once; fixes always produce canonical XML.
+- **Scene version**: the first 16 hex digits of SHA-256 over the canonical XML.
+  Applying a fix produces new XML and therefore a new version.
 
 ## Rules
 
@@ -69,12 +72,15 @@ Static (stage 2):
 
 | rule | fires when | fix |
 | -- | -- | -- |
-| `zero_mass` | a movable object's mass ≤ 1e-6 kg | set geom density to 1000 kg/m³ and recompute inertia |
-| `bad_inertia` | a principal inertia ≤ 0 or violates the triangle inequality | recompute inertia from geoms |
+| `zero_mass` | a movable object's mass ≤ 1e-6 kg | drop the explicit `<inertial>`, set geom density to 1000 kg/m³, and let MuJoCo recompute mass and inertia from the geometry |
 | `no_collision` | every geom on the object has `contype == 0 and conaffinity == 0` | set `contype=1, conaffinity=1` |
 | `default_friction` | friction equals MuJoCo's default `(1, 0.005, 0.0001)` on a movable object | warning only, no fix |
-| `unlimited_hinge` | a hinge or slide joint has `limited` false | add a range of ±90° (hinge) or ±0.5 m (slide) |
+| `unlimited_joint` | a hinge or slide joint has `limited` false | add a range of ±90° (hinge) or ±0.5 m (slide) |
 | `implausible_scale` | the object's bounding box is larger than 20 m or smaller than 5 mm | when the box is larger than 20 m and dividing by 1000 lands between 5 mm and 20 m, scale geom sizes and positions by 0.001; otherwise warning only |
+
+There is no inertia rule: MuJoCo's compiler already refuses non-positive or
+non-physical inertia (and a mass of exactly zero) on a moving body, so those
+surface as stage-1 compile failures.
 
 Simulation (stage 3), after `mj_forward` and stepping to 2 s:
 
@@ -82,8 +88,8 @@ Simulation (stage 3), after `mj_forward` and stepping to 2 s:
 | -- | -- |
 | `initial_penetration` | at t = 0 a contact involving the object has distance < −1 mm |
 | `exploded` | any linear speed of the object exceeds 20 m/s |
-| `fell_through_floor` | the object's lowest point ends more than 0.5 m below the floor plane |
-| `unstable` | any `qpos`/`qvel` becomes NaN or MuJoCo raises an instability warning |
+| `fell_through_floor` | the lowest corner of the object's geom bounding boxes ends more than 0.5 m below the floor plane |
+| `unstable` | the object's own `qvel` contains NaN or its `qacc` exceeds 1e10 |
 
 Simulation findings carry no automatic fix; the message names the likely cause.
 
@@ -97,11 +103,12 @@ from scratch for this project:
 
 | object | planted issue |
 | -- | -- |
-| `mug_a` | zero mass |
+| `table`, `cabinet` | none — fixed scenery |
+| `mug_a` | effectively massless (1e-7 kg; MuJoCo refuses exactly zero) |
 | `plate` | collision disabled |
-| `box_small` | starts 2 cm inside the table top |
+| `box_small` | starts inside the table top; friction left at the default (warning) |
 | `cabinet_door` | hinge without limits |
-| `tray_mm` | modelled in millimetres (size 300 instead of 0.3) |
+| `tray_mm` | modelled in millimetres (size 150 × 100 × 5 instead of 0.15 × 0.10 × 0.005); placed on a second station 200 m away so it does not swallow the table before it is fixed |
 | `mug_b` | none — the control object |
 
 ## Architecture
@@ -116,7 +123,7 @@ deployed as one Docker image on Render.
 | `loader.py` | validate upload, compile with `MjSpec`, build the object list |
 | `checks/static_rules.py` | static rules, each a pure function `(model, data) -> list[Finding]` |
 | `checks/sim_rules.py` | simulation stepping and the simulation rules |
-| `fixes.py` | apply a fix through `MjSpec` edits and return new XML |
+| `fixes.py` | apply a fix through `MjSpec` edits and return canonical XML; the loader compiles that XML fresh (compiling the edited spec in place keeps stale inertial values) |
 | `geometry.py` | export compiled geometry for rendering |
 | `runs.py` | run records, event buffers, idempotency index, pricing, metrics |
 | `api.py` | routes; CPU-bound work runs in `asyncio.to_thread` |
@@ -126,8 +133,10 @@ deployed as one Docker image on Render.
 | method and path | result |
 | -- | -- |
 | `GET /api/samples` | list of built-in samples |
-| `POST /api/scenes` | body: XML file upload or `{"sample": "tabletop"}` → `{scene_id, version}` |
-| `POST /api/scenes/{scene_id}/runs` | start a full run → `{run_id}` |
+| `GET /api/health` | `{ok: true}` |
+| `POST /api/scenes` | body `{"sample": "tabletop"}` → `{scene_id, version}` |
+| `POST /api/scenes/upload` | multipart `file` (MJCF XML) → `{scene_id, version}` |
+| `POST /api/scenes/{scene_id}/runs` | start a full run on the current version (also the "Run again" button) → `{run_id}` |
 | `GET /api/runs/{run_id}/events` | SSE stream; honours `Last-Event-ID` |
 | `POST /api/scenes/{scene_id}/objects/{name}/fix` | body `{fix_id}` → `{run_id, cached}` |
 | `POST /api/scenes/{scene_id}/objects/{name}/review` | body `{decision: "approve"|"reject"}` → object state |
@@ -142,7 +151,7 @@ Each event has a monotonically increasing integer `id` per run and a JSON
 `data` payload:
 
 - `stage_started {stage}`
-- `geometry {objects: [...]}` — after compile
+- `geometry {objects: [...]}` — after compile; includes a `world` entry for geoms on the world body (the floor), which is drawn but not reviewable
 - `finding {finding}`
 - `object_status {object, status}` — `checking | ok | has_issues`
 - `stage_completed {stage, duration_ms, cost}`
@@ -157,9 +166,10 @@ run replays its buffer and closes.
 
 Fix-and-rerun key: `sha256(scene_version + object + fix_id)`. If the key has a
 run, the endpoint returns that `run_id` with `cached: true`, charges nothing,
-and adds the would-be cost to "saved by idempotency". A rerun only executes
-stages 2–3 for the one object, against the fixed scene, but the fixed XML
-becomes the scene's current version.
+and adds the would-be cost to "saved by idempotency". A rerun compiles the fixed scene (stage 1, charged), runs stages 2–3, and
+replaces only that object's findings and decision; other objects keep theirs.
+The fixed XML becomes the scene's current version only if it compiles. A full
+run keeps existing decisions.
 
 Rate card (fake, shown in the UI and README): compile $0.001 per run, static
 checks $0.0005 per object, simulation $0.01 per simulated second.
@@ -202,6 +212,9 @@ Selection is shared between the viewport and the panel.
 - Manual: one full pass on the deployed URL against the success criteria.
 
 ## Deployment
+
+`mujoco` is pinned to 3.3.7, the newest release with a wheel for the local
+Python 3.9; the image uses `python:3.12-slim` with the same pin.
 
 Multi-stage Dockerfile (Node build → `python:3.12-slim`), one Render web
 service on the free plan. The repository is public on the author's personal
