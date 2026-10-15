@@ -75,6 +75,12 @@ pythonpath = ["."]
 Run: `.venv/Scripts/python -m pip install -r backend/requirements-dev.txt`
 Expected: ends with `Successfully installed ...` (mujoco 3.3.7 is already present).
 
+Then pin what resolved on Python 3.9 so the 3.12 image runs the same versions (newer uvicorn and numpy have dropped 3.9, so the ranges above would resolve differently there):
+
+Run: `.venv/Scripts/python -m pip freeze | grep -iE "^(fastapi|uvicorn|numpy|pydantic|pydantic_core|starlette|python-multipart|httpx|pytest)=="`
+
+Replace each `>=` line in both requirements files with the exact `==` version printed (keep `mujoco==3.3.7`, keep `[standard]` on uvicorn). numpy 2.0.x is the last line with Python 3.9 wheels and also ships 3.12 wheels, so the pins hold in both environments.
+
 - [ ] **Step 2: Models**
 
 `backend/app/__init__.py` and `backend/tests/__init__.py`: empty files.
@@ -622,8 +628,9 @@ def unlimited_joint(model, data, obj):
 
 
 def implausible_scale(model, data, obj):
+    # longest side of each geom's bounding box (geom_aabb holds centre + half sizes)
     extents = [
-        2.0 * float(model.geom_rbound[g])
+        2.0 * float(model.geom_aabb[g, 3:].max())
         for g in obj.geom_ids
         if model.geom_type[g] != mujoco.mjtGeom.mjGEOM_PLANE
     ]
@@ -784,6 +791,8 @@ from ..models import Finding
 
 SIM_SECONDS = 2.0
 WALL_SECONDS = 10.0
+# Free fall for SIM_SECONDS reaches 9.81 * 2 = 19.6 m/s, just under this. Raise
+# SIM_SECONDS and a body falling through the floor also counts as exploded.
 EXPLODE_SPEED = 20.0
 PENETRATION_M = 0.001
 FLOOR_DROP_M = 0.5
@@ -962,16 +971,18 @@ def test_limit_joints_hinge_and_slide():
             '<joint name="s" type="slide" axis="1 0 0"/><geom type="box" size="0.1 0.01 0.1"/></body>')
     found, scene = fixed(body, "arm", "limit_joints", unlimited_joint)
     assert found == []
-    assert scene.model.jnt_range[0].tolist() == pytest.approx([-math.pi / 2, math.pi / 2])
+    # MjSpec.to_xml() keeps 6 significant digits, so -1.5708 is what comes back
+    assert scene.model.jnt_range[0].tolist() == pytest.approx([-math.pi / 2, math.pi / 2], abs=1e-4)
     assert scene.model.jnt_range[1].tolist() == pytest.approx([-0.5, 0.5])
 
 
 def test_limit_joints_keeps_existing_range():
-    body = ('<body name="arm" pos="0 0 1"><joint name="h" type="hinge" axis="0 0 1" range="-0.2 0.2"/>'
+    # MJCF angles default to degrees; the compiled range is in radians.
+    body = ('<body name="arm" pos="0 0 1"><joint name="h" type="hinge" axis="0 0 1" range="-20 20"/>'
             '<joint name="s" type="slide" axis="1 0 0"/><geom type="box" size="0.1 0.01 0.1"/></body>')
     found, scene = fixed(body, "arm", "limit_joints", unlimited_joint)
     assert found == []
-    assert scene.model.jnt_range[0].tolist() == pytest.approx([-0.2, 0.2])
+    assert scene.model.jnt_range[0].tolist() == pytest.approx([-math.radians(20), math.radians(20)], abs=1e-4)
 
 
 def test_scale_mm_to_m():
@@ -1013,6 +1024,7 @@ from .loader import SceneError
 HINGE_RANGE = (-math.pi / 2, math.pi / 2)
 SLIDE_RANGE = (-0.5, 0.5)
 LIMITED = int(mujoco.mjtLimited.mjLIMITED_TRUE)
+AUTO = int(mujoco.mjtLimited.mjLIMITED_AUTO)
 
 
 def _body(spec, name):
@@ -1035,9 +1047,15 @@ def enable_collision(body):
         geom.conaffinity = 1
 
 
+def _has_limit(joint) -> bool:
+    # A joint parsed with a range reports limited=auto (2), not true (1).
+    limited = int(joint.limited)
+    return limited == LIMITED or (limited == AUTO and float(joint.range[0]) < float(joint.range[1]))
+
+
 def limit_joints(body):
     for joint in body.joints:
-        if int(joint.limited) == LIMITED:
+        if _has_limit(joint):
             continue
         if joint.type == mujoco.mjtJoint.mjJNT_HINGE:
             joint.range = HINGE_RANGE
@@ -1075,7 +1093,7 @@ def apply_fix(xml: str, object_name: str, fix_id: str) -> str:
 - [ ] **Step 3: Run**
 
 Run: `cd backend && ../.venv/Scripts/python -m pytest tests/test_fixes.py -q`
-Expected: `7 passed`. If `test_limit_joints_keeps_existing_range` fails because the hinge with a range reports `limited` as `2` (auto), compare against the compiled model instead: the fix must skip any joint whose compiled `jnt_limited` is already 1. In that case parse once, compile, and read `model.jnt_limited` by joint name before editing.
+Expected: `7 passed`.
 
 - [ ] **Step 4: Commit**
 
@@ -1324,6 +1342,17 @@ def test_registry_drops_runs_with_their_scene(monkeypatch):
     assert reg.run(run.run_id) is None
 
 
+def test_registry_keeps_only_recent_runs_per_scene(monkeypatch):
+    monkeypatch.setattr(runs, "MAX_RUNS_PER_SCENE", 2)
+    reg = Registry()
+    scene = reg.add_scene("<mujoco/>", "v1", [])
+    first = reg.add_run(scene.scene_id)
+    second = reg.add_run(scene.scene_id)
+    third = reg.add_run(scene.scene_id)
+    assert reg.run(first.run_id) is None
+    assert reg.run(second.run_id) is not None and reg.run(third.run_id) is not None
+
+
 def test_rerun_cost_matches_rate_card():
     assert rerun_cost() == pytest.approx(0.001 + 0.0005 + 0.01 * 2.0)
 ```
@@ -1352,6 +1381,7 @@ RATE_COMPILE = 0.001
 RATE_STATIC_PER_OBJECT = 0.0005
 RATE_SIM_PER_SECOND = 0.01
 MAX_SCENES = 200
+MAX_RUNS_PER_SCENE = 20
 SCENE_TTL_SECONDS = 2 * 60 * 60
 
 
@@ -1492,6 +1522,9 @@ class Registry:
 
     def add_run(self, scene_id: str, object_name: Optional[str] = None) -> RunRecord:
         with self._lock:
+            mine = [r for r in self._runs.values() if r.scene_id == scene_id]  # oldest first
+            for stale in mine[: max(0, len(mine) + 1 - MAX_RUNS_PER_SCENE)]:
+                self._runs.pop(stale.run_id, None)
             run = RunRecord(f"run_{secrets.token_hex(8)}", scene_id, object_name)
             self._runs[run.run_id] = run
             return run
@@ -1517,7 +1550,7 @@ class Registry:
 - [ ] **Step 3: Run**
 
 Run: `cd backend && ../.venv/Scripts/python -m pytest tests/test_runs.py -q`
-Expected: `9 passed`.
+Expected: `10 passed`.
 
 - [ ] **Step 4: Commit**
 
@@ -1708,7 +1741,10 @@ def _execute(scene, run, xml, only):
         scene.charge(RATE_COMPILE)
         targets = [o for o in compiled.objects if only is None or o.name == only]
         for obj in targets:
+            # clear now, not at the end: a snapshot taken mid-run must not carry
+            # findings that the stream is about to replay
             scene.objects[obj.name].status = "checking"
+            scene.objects[obj.name].findings = []
     run.emit("geometry", {"objects": scene.geometry})
     for obj in targets:
         run.emit("object_status", {"object": obj.name, "status": "checking"})
@@ -1859,6 +1895,11 @@ def test_validation_error_uses_error_shape(client):
     assert res.json()["error"]["code"] == "validation_error"
 
 
+def test_unknown_api_path_and_wrong_method_use_error_shape(client):
+    assert client.get("/api/nope").json()["error"]["code"] == "http_404"
+    assert client.get("/api/scenes").json()["error"]["code"] == "http_405"
+
+
 def test_upload_rejects_non_mjcf(client):
     res = client.post("/api/scenes/upload", files={"file": ("page.xml", b"<html><body>hi</body></html>", "text/xml")})
     assert res.status_code == 400
@@ -1967,7 +2008,7 @@ from pydantic import BaseModel
 
 from . import pipeline
 from .fixes import apply_fix
-from .loader import MAX_UPLOAD_BYTES, SceneError, canonicalise, compile_scene
+from .loader import MAX_UPLOAD_BYTES, SceneError, canonicalise, compile_scene, scene_version
 from .runs import Registry, idempotency_key, rerun_cost
 from .samples import SAMPLES, load_sample
 
@@ -2085,7 +2126,10 @@ async def fix_object(scene_id: str, name: str, body: FixBody, request: Request, 
         except SceneError as e:
             raise ApiError(400 if e.code == "unknown_fix" else 404, e.code, e.message)
         run = reg.add_run(scene_id, name)
-        scene.fix_runs[key] = run.run_id
+        # Asking for the same fix again on the scene this fix produces is the
+        # same work, so both the input and the output version point at this run.
+        for version in (scene.version, scene_version(xml)):
+            scene.fix_runs[idempotency_key(version, name, body.fix_id)] = run.run_id
         scene.manual_fixes += 1
         scene.current_run_id = run.run_id
     _start(request, scene, run, xml=xml, only=name)
@@ -2136,13 +2180,17 @@ async def run_events(run_id: str, request: Request, reg: Registry = Depends(regi
 ```python
 from __future__ import annotations
 
+import asyncio
 import os
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .api import ApiError, router
 from .runs import Registry
@@ -2150,19 +2198,37 @@ from .runs import Registry
 DEFAULT_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 
 
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    # Every open SSE client parks a thread in wait_for and the pipeline runs in
+    # the same pool, so the default pool (cpu+4) would stall runs under a
+    # handful of viewers.
+    asyncio.get_running_loop().set_default_executor(ThreadPoolExecutor(max_workers=64))
+    yield
+
+
+def _error(status: int, code: str, message: str) -> JSONResponse:
+    return JSONResponse(status_code=status, content={"error": {"code": code, "message": message}})
+
+
 def create_app() -> FastAPI:
-    app = FastAPI(title="Sim-Scene Review", docs_url="/api/docs", openapi_url="/api/openapi.json")
+    app = FastAPI(title="Sim-Scene Review", docs_url="/api/docs", openapi_url="/api/openapi.json", lifespan=_lifespan)
     app.state.registry = Registry()
     app.state.tasks = set()
     app.include_router(router)
 
     @app.exception_handler(ApiError)
     async def _api_error(request: Request, exc: ApiError):
-        return JSONResponse(status_code=exc.status, content={"error": {"code": exc.code, "message": exc.message}})
+        return _error(exc.status, exc.code, exc.message)
 
     @app.exception_handler(RequestValidationError)
     async def _validation_error(request: Request, exc: RequestValidationError):
-        return JSONResponse(status_code=422, content={"error": {"code": "validation_error", "message": str(exc)}})
+        return _error(422, "validation_error", str(exc))
+
+    @app.exception_handler(StarletteHTTPException)
+    async def _http_error(request: Request, exc: StarletteHTTPException):
+        # unknown paths, 405s and bad path params otherwise answer with Starlette's {"detail": ...}
+        return _error(exc.status_code, f"http_{exc.status_code}", str(exc.detail))
 
     dist = Path(os.environ.get("FRONTEND_DIST", str(DEFAULT_DIST)))
     if dist.is_dir():
@@ -2176,7 +2242,7 @@ app = create_app()
 - [ ] **Step 3: Run**
 
 Run: `cd backend && ../.venv/Scripts/python -m pytest tests/test_api.py -q`
-Expected: `13 passed`. If `test_full_run_streams_in_order` hangs, the pipeline task never ran: confirm the handlers are `async def` (a sync handler runs in a threadpool where `asyncio.create_task` has no loop).
+Expected: `14 passed`. If `test_full_run_streams_in_order` hangs, the pipeline task never ran: confirm the handlers are `async def` (a sync handler runs in a threadpool where `asyncio.create_task` has no loop).
 
 - [ ] **Step 4: Boot the server once by hand**
 
@@ -2212,13 +2278,13 @@ EOF
 
 Run from the repo root:
 ```bash
-npm create vite@latest frontend -- --template react-ts
+npm create vite@latest frontend -- --template react-ts --no-interactive
 cd frontend
 npm install
 npm install three @react-three/fiber @react-three/drei
 npm install -D vitest @types/three
 ```
-Expected: `frontend/package.json` exists with `react` 19.x and `vite` 6.x or newer.
+Expected: `frontend/package.json` exists with `react` 19.2.x, `vite` 8.x and `typescript` 6.x (whatever create-vite ships today; the code in Tasks 10–12 is written against the template's strict `tsconfig.app.json`: `verbatimModuleSyntax`, `erasableSyntaxOnly`, `noUnusedLocals`).
 
 Replace `frontend/vite.config.ts`:
 ```ts
@@ -2446,8 +2512,8 @@ export function initialState(): ViewState {
 
 /** A snapshot taken mid-run has objects still "checking"; treat the scene as
  * running so the page resubscribes to the run's stream after a reload. The
- * server replays every event, and the snapshot carries no findings for an
- * object that is still checking, so nothing is counted twice. */
+ * server replays every event; the pipeline clears an object's findings the
+ * moment it goes back to "checking", so nothing is counted twice. */
 export function fromSnapshot(snapshot: Snapshot): ViewState {
   const running = snapshot.current_run_id !== null && snapshot.objects.some((o) => o.status === "checking");
   return {
@@ -2751,7 +2817,8 @@ export function ObjectPanel({ objects, selected, busy, onSelect, onReview, onFix
               <strong>{f.rule}</strong>
               <p>{f.message}</p>
               {f.fix && (
-                <button disabled={busy} onClick={() => onFix(current.name, f.fix!.fix_id)}>
+                {/* stays enabled while running: a second press is exactly what the server deduplicates */}
+                <button onClick={() => onFix(current.name, f.fix!.fix_id)}>
                   Apply fix & rerun: {f.fix.label}
                 </button>
               )}
@@ -2791,6 +2858,7 @@ export function MetricsFooter({ metrics }: { metrics: Metrics | null }) {
       {cell("Reruns", m ? String(m.reruns) : "—")}
       {cell("Cost", m ? `$${m.cost.toFixed(4)}` : "—")}
       {cell("Saved by idempotency", m ? `$${m.saved_by_idempotency.toFixed(4)}` : "—")}
+      <div className="rate-card">Rate card (fake): compile $0.001/run · static $0.0005/object · simulation $0.01/s</div>
     </footer>
   );
 }
@@ -2836,7 +2904,7 @@ export default function App() {
       // the version are authoritative after every run.
       if (event.type === "run_completed" || event.type === "run_failed") {
         const id = sceneFromHash();
-        if (id) api.snapshot(id).then((snap) => setState((s) => ({ ...fromSnapshot(snap), selected: s.selected, error: s.error }))).catch(() => undefined);
+        if (id) api.snapshot(id).then((snap) => setState((s) => ({ ...fromSnapshot(snap), stages: s.stages, running: false, selected: s.selected, error: s.error }))).catch(() => undefined);
       }
     },
     [],
@@ -2961,6 +3029,7 @@ li.checking .dot { background: #3e63dd; animation: pulse 1s infinite alternate; 
 .metrics { display: flex; gap: 24px; padding: 10px 16px; border-top: 1px solid var(--line); background: #fff; }
 .metric .label { display: block; font-size: 11px; color: var(--muted); text-transform: uppercase; }
 .metric .value { font-weight: 600; }
+.rate-card { margin-left: auto; align-self: center; font-size: 11px; color: var(--muted); }
 ```
 
 - [ ] **Step 5: Type-check and try it against the backend**
@@ -2968,7 +3037,7 @@ li.checking .dot { background: #3e63dd; animation: pulse 1s infinite alternate; 
 Run: `cd frontend && npx tsc -b && npm run build`
 Expected: no errors; `frontend/dist/index.html` exists.
 
-Start the backend (`cd backend && ../.venv/Scripts/python -m uvicorn app.main:app --port 8000`) and the dev server (`cd frontend && npm run dev`). Open the dev URL. Click **Load sample**. Expected: the three stages turn blue then green within a few seconds, the object list shows `mug_a`, `plate`, `box_small`, `cabinet_door`, `tray_mm` in red/amber and `mug_b` green; selecting `mug_a` and pressing its fix reruns only `mug_a`, which turns green; pressing the same fix again shows the "reusing run" notice. Reload the page: the state comes back from the URL hash. Approve everything: the footer shows a time. Stop both servers.
+Start the backend (`cd backend && ../.venv/Scripts/python -m uvicorn app.main:app --port 8000`) and the dev server (`cd frontend && npm run dev`). Open the dev URL. Click **Load sample**. Expected: the three stages turn blue then green within a few seconds, the object list shows `mug_a`, `plate`, `box_small`, `cabinet_door`, `tray_mm` in red/amber and `mug_b` green; selecting `mug_a` and pressing its fix twice in quick succession reruns only `mug_a`, which turns green, while the second press shows the "reusing run" notice and the footer's saved figure moves. Reload the page: the state comes back from the URL hash. Approve everything: the footer shows a time. Stop both servers.
 
 - [ ] **Step 6: Commit**
 
@@ -3167,7 +3236,7 @@ and add `import { SceneViewport } from "./components/SceneViewport";`.
 - [ ] **Step 4: Check it renders**
 
 Run: `cd frontend && npx tsc -b && npm run build` — Expected: clean.
-Start both servers as in Task 11 step 5, load the sample. Expected: a grey floor, a brown table, a white plate, two mugs (one red, one green), an orange box half inside the table top, a cabinet with a red door; the sample's huge tray is 200 m away so it is out of frame, which is intended. Clicking a mug selects it in the panel; selecting in the panel highlights the geom. Orbit with the mouse. Apply the `tray_mm` fix; it stays out of frame and turns green in the list.
+Start both servers as in Task 11 step 5, load the sample. Expected: a grey floor, a brown table, a red plate, two mugs (one red, one green), a red box half inside the table top (status colour overrides its own orange because it carries an error), a cabinet with a red door; the sample's huge tray is 200 m away so it is out of frame, which is intended. Clicking a mug selects it in the panel; selecting in the panel highlights the geom. Orbit with the mouse. Apply the `tray_mm` fix; it stays out of frame and turns green in the list.
 
 - [ ] **Step 5: Commit**
 
@@ -3203,7 +3272,10 @@ RUN npm run build
 FROM python:3.12-slim
 WORKDIR /app
 COPY backend/requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+# Without this, `import mujoco` tries to load GLFW, which needs libX11 the slim image lacks.
+ENV MUJOCO_GL=disable
+RUN pip install --no-cache-dir -r requirements.txt \
+ && python -c "import mujoco, fastapi; print(mujoco.__version__)"
 COPY backend/ ./
 COPY --from=web /web/dist ./frontend_dist
 ENV FRONTEND_DIST=/app/frontend_dist
@@ -3265,17 +3337,20 @@ inertia and zero mass, so those surface at stage 1.
 
 ## How it is built
 
-- **Backend** — FastAPI. The scene is compiled once with `mujoco`; the checks,
-  the geometry the browser draws, and the fixes all read that one compiled
-  model, so what you see is what is simulated. Rules are pure functions;
+- **Backend** — FastAPI. The scene is compiled once with `mujoco`; the checks
+  and the geometry the browser draws read that one compiled model, so what
+  you see is what is simulated. Fixes edit the XML through `MjSpec` and the
+  result is compiled fresh. Rules are pure functions;
   one that throws becomes a `check_error` finding instead of killing the run.
 - **Streaming** — each run keeps its events in memory with increasing ids.
   The browser's `EventSource` reconnects on its own and sends
   `Last-Event-ID`; the server replays from there. Waiting is a blocking
   `Condition.wait_for` in a worker thread, so there is no polling loop.
-- **Idempotency** — a fix request is keyed by `scene version + object + fix`.
-  Repeating it returns the original run and charges nothing; the footer
-  shows what that saved.
+- **Idempotency** — a fix request is keyed by `scene version + object + fix`,
+  recorded for both the version the fix was applied to and the version it
+  produced. Pressing the same fix twice, even while the first rerun is still
+  going, returns the original run and charges nothing; the footer shows what
+  that saved.
 - **Frontend** — Vite, React, TypeScript, React Three Fiber. Events fold
   into view state through a pure reducer (`src/reducer.ts`, unit-tested);
   after each run the page re-reads the server snapshot so decisions and the
@@ -3305,6 +3380,9 @@ inertia and zero mass, so those surface at stage 1.
 - The simulation rules use thresholds (20 m/s, 0.5 m below the floor) rather
   than physics-aware judgement. They catch the gross failures a person would
   otherwise find by eye in the viewer.
+- Canonicalisation re-serialises the upload through MuJoCo, which rounds
+  every number to 6 significant digits.
+- No rate limiting. A scene keeps only its last 20 runs.
 - Only MJCF. USD and zip uploads with mesh files are the obvious next inputs.
 - No end-to-end browser tests; the backend and the reducer are unit-tested.
 
@@ -3319,8 +3397,10 @@ fix it. `mug_b` is the control.
 ## Run it locally
 
 ```bash
-python -m venv .venv && .venv/Scripts/python -m pip install -r backend/requirements-dev.txt
-cd backend && ../.venv/Scripts/python -m pytest -q
+python -m venv .venv
+.venv/Scripts/python -m pip install -r backend/requirements-dev.txt   # macOS/Linux: .venv/bin/python
+cd backend
+../.venv/Scripts/python -m pytest -q
 ../.venv/Scripts/python -m uvicorn app.main:app --reload --port 8000
 # second shell
 cd frontend && npm install && npm test && npm run dev
