@@ -25,8 +25,10 @@ inertia and zero mass, so those surface at stage 1.
 - **Backend** — FastAPI. The scene is compiled once with `mujoco`; the checks
   and the geometry the browser draws read that one compiled model, so what
   you see is what is simulated. Fixes edit the XML through `MjSpec` and the
-  result is compiled fresh. Rules are pure functions;
-  one that throws becomes a `check_error` finding instead of killing the run.
+  result is compiled fresh. Static rules are pure functions; one that
+  throws becomes a `check_error` finding instead of killing the run. The
+  `implausible_scale` rule measures the largest single geom, not the whole
+  object.
 - **Streaming** — each run keeps its events in memory with increasing ids.
   The browser's `EventSource` reconnects on its own and sends
   `Last-Event-ID`; the server replays from there. Waiting is a blocking
@@ -37,7 +39,9 @@ inertia and zero mass, so those surface at stage 1.
   the first; instead the object panel lists every fix applied in this session
   with a Re-apply button. Pressing it sends the same fix on the same version,
   the server returns the original run, charges nothing, and the footer's
-  "saved" figure moves.
+  "saved" figure moves. The button is offered only while the scene is still
+  at the version that fix produced; after any other change it says so
+  instead.
 - **Frontend** — Vite, React, TypeScript, React Three Fiber. Events fold
   into view state through a pure reducer (`src/reducer.ts`, unit-tested);
   after each run the page re-reads the server snapshot so decisions and the
@@ -47,8 +51,8 @@ inertia and zero mass, so those surface at stage 1.
 
 ## What is measured
 
-- **Time to usable scene** — from scene creation until every object is
-  approved. This is the number I would watch first in a real product.
+- **Time to usable scene** — from scene creation until the first time
+  every object is approved. This is the number I would watch first in a real product.
 - **Manual fixes** and **reruns** — how much human and compute effort a
   scene needed.
 - **Cost** — from a fake rate card (compile $0.001/run, static $0.0005/object,
@@ -56,11 +60,17 @@ inertia and zero mass, so those surface at stage 1.
 
 ## Deliberate trade-offs
 
-- State is in memory: 200 scenes, two-hour TTL, gone on restart. A real
-  service would persist runs and let the SSE buffer be rebuilt from storage.
+- State is in memory: 200 scenes, two-hour TTL, gone on restart. Render's
+  free tier also idles the service out after about 15 minutes without
+  traffic, which empties memory long before the TTL. A real service would
+  persist runs and let the SSE buffer be rebuilt from storage.
 - Uploads must be a single MJCF file under 1 MB with no `<include>` and no
   `file=` attributes, so the server never opens a path an upload names.
-  Inline mesh vertices still work.
+  Inline mesh vertices still work. The compiled scene is capped at 500
+  bodies, 2000 geoms, 200 000 mesh vertices and a 64 MiB arena
+  (`scene_too_large`). A declared `Content-Length` over the limit is refused
+  before the body is read; a chunked body without one is bounded only by the
+  post-read check.
 - An object rerun re-checks only that object. Other objects keep their
   earlier findings even though the fix changed the scene; **Run again**
   does the full pass.
@@ -76,8 +86,14 @@ inertia and zero mass, so those surface at stage 1.
   every number to 6 significant digits.
 - No rate limiting. A scene keeps only its last 20 runs.
 - Only MJCF. USD and zip uploads with mesh files are the obvious next inputs.
-- No end-to-end browser tests; the backend (76 tests) and the frontend (16
+- No end-to-end browser tests; the backend (86 tests) and the frontend (18
   tests, including the reducer) are unit-tested.
+
+**Scale.** Each open event stream parks one worker thread in
+`Condition.wait_for`, in a pool of 64 shared with the pipeline, so beyond a
+few dozen simultaneous viewers runs queue behind streams until the 15 s
+keepalive frees a thread. The fix is an asyncio bridge
+(`call_soon_threadsafe`) and is the first thing to change for real traffic.
 
 ## Sample scene
 
@@ -100,6 +116,10 @@ cd frontend && npm install && npm test && npm run dev
 ```
 
 Open the Vite URL; `/api` is proxied to port 8000.
+
+`backend/constraints.txt` is a `pip freeze` of the development environment;
+the Docker image installs with `-c constraints.txt` so a rebuild gets the
+same transitive versions. Regenerate it after changing `requirements*.txt`.
 
 Or run the deployed image locally:
 
