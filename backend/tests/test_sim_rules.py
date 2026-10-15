@@ -1,3 +1,5 @@
+import time
+
 import numpy as np
 
 from app.checks import sim_rules
@@ -40,7 +42,32 @@ def test_exploded_under_absurd_gravity():
     assert ("ball", "exploded") in rules(result)
 
 
-def test_unstable_detects_nan(monkeypatch):
+# Explicit Euler with a 1e9 N/m spring at 10 ms steps blows up on the second
+# step; MuJoCo's autoreset then wipes the state, so only its warning counter
+# can tell us. Mirrors the autoreset path the rule exists for.
+DIVERGING = (
+    '<body name="spring" pos="0 0 1">'
+    '<joint name="j" type="slide" axis="0 0 1" stiffness="1e9" damping="0"/>'
+    '<geom type="sphere" size="0.05"/></body>'
+)
+
+
+def test_unstable_detected_through_mujoco_warning_under_autoreset():
+    started = time.monotonic()
+    result = run(DIVERGING, extra='<option integrator="Euler" timestep="0.01"/>')
+    elapsed = time.monotonic() - started
+    assert rules(result) == [("spring", "unstable")]
+    assert result.simulated_seconds < 0.5
+    assert elapsed < 1.0
+
+
+def test_unstable_names_the_diverging_object_not_every_movable_one():
+    two = DIVERGING + ball(0.05).replace("0 0 0.05", "1 0 0.05")
+    result = run(two, extra='<option integrator="Euler" timestep="0.01"/>')
+    assert rules(result) == [("spring", "unstable")]
+
+
+def test_unstable_still_detects_nan_without_autoreset(monkeypatch):
     def poison(model, data):
         data.qvel[:] = float("nan")
 

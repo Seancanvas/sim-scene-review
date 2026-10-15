@@ -73,6 +73,48 @@ def _dofs(model, obj):
     return slice(start, start + int(model.body_dofnum[obj.body_id]))
 
 
+# MuJoCo's default autoreset wipes MjData inside mj_step the moment a qacc goes
+# NaN or huge, so a post-step look at qacc sees a fresh scene. The warning
+# counters survive the reset and name the dof that blew up.
+_INSTABILITY_WARNINGS = (
+    mujoco.mjtWarning.mjWARN_BADQACC,
+    mujoco.mjtWarning.mjWARN_BADQVEL,
+    mujoco.mjtWarning.mjWARN_BADQPOS,
+    mujoco.mjtWarning.mjWARN_BADCTRL,
+)
+
+
+def _warning_counts(data):
+    return [int(data.warning[w].number) for w in _INSTABILITY_WARNINGS]
+
+
+def _owner(model, body_id: int, by_body: dict):
+    while body_id > 0:
+        obj = by_body.get(body_id)
+        if obj is not None:
+            return obj
+        body_id = int(model.body_parentid[body_id])
+    return None
+
+
+def _blame(model, data, warning, movable):
+    """The movable object whose dof the warning names, or every movable
+    object when the index cannot be mapped (BADCTRL names an actuator)."""
+    by_body = {o.body_id: o for o in movable}
+    info = int(data.warning[warning].lastinfo)
+    dof = None
+    if warning in (mujoco.mjtWarning.mjWARN_BADQACC, mujoco.mjtWarning.mjWARN_BADQVEL):
+        dof = info
+    elif warning == mujoco.mjtWarning.mjWARN_BADQPOS:
+        hits = [j for j in range(model.njnt) if int(model.jnt_qposadr[j]) <= info]
+        dof = int(model.jnt_dofadr[hits[-1]]) if hits else None
+    if dof is not None and 0 <= dof < model.nv:
+        obj = _owner(model, int(model.dof_bodyid[dof]), by_body)
+        if obj is not None:
+            return [obj]
+    return list(movable)
+
+
 def simulate(model, data, objects) -> SimResult:
     mujoco.mj_resetData(model, data)
     mujoco.mj_forward(model, data)
@@ -81,8 +123,16 @@ def simulate(model, data, objects) -> SimResult:
     movable = [o for o in objects if o.movable]
     exploded, unstable = set(), set()
     started = time.monotonic()
+    warnings_before = _warning_counts(data)
     while data.time < SIM_SECONDS and time.monotonic() - started < WALL_SECONDS:
         mujoco.mj_step(model, data)
+        warnings_after = _warning_counts(data)
+        if warnings_after != warnings_before:
+            for warning, before, after in zip(_INSTABILITY_WARNINGS, warnings_before, warnings_after):
+                if after > before:
+                    unstable.update(o.name for o in _blame(model, data, warning, movable))
+            # the state has been reset; nothing stepped after this is meaningful
+            break
         for obj in movable:
             dofs = _dofs(model, obj)
             qvel, qacc = data.qvel[dofs], data.qacc[dofs]
