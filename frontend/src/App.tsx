@@ -52,13 +52,17 @@ export default function App() {
   };
 
   const onFix = (name: string, fixId: string) => {
-    if (!state.sceneId) return;
+    const sceneId = state.sceneId;
+    if (!sceneId) return;
     const fix = state.objects[name]?.findings.find((f) => f.fix?.fix_id === fixId)?.fix ?? { fix_id: fixId, label: fixId };
     api
-      .fix(state.sceneId, name, fixId)
+      .fix(sceneId, name, fixId)
       .then((r) => {
-        if (r.cached) setNotice(`Already applied on this scene version — reusing run ${r.run_id}, nothing charged.`);
-        else setState((s) => recordAppliedFix(beginRun(s, r.run_id, name), name, fix));
+        if (r.cached) {
+          setNotice(`Already applied on this scene version — reusing run ${r.run_id}, nothing charged.`);
+          return api.snapshot(sceneId).then((snap) => setState((s) => ({ ...s, metrics: snap.metrics })));
+        }
+        setState((s) => recordAppliedFix(beginRun(s, r.run_id, name), name, fix));
       })
       .catch((e) => fail(e.message));
   };
