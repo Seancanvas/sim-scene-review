@@ -8,9 +8,10 @@ button { font: inherit; padding: 6px 12px; border: 1px solid var(--line); border
 button:disabled { opacity: .5; cursor: default; }
 button.secondary { margin-left: auto; }
 .scene-input { display: flex; gap: 8px; align-items: center; }
-.upload { padding: 6px 12px; border: 1px dashed var(--muted); border-radius: 6px; cursor: pointer; }
+.upload { position: relative; padding: 6px 12px; border: 1px dashed var(--muted); border-radius: 6px; cursor: pointer; }
 .upload.disabled { opacity: .5; }
-.upload input { display: none; }
+.upload input { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; border: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.upload:focus-within { outline: 2px solid #3e63dd; outline-offset: 2px; }
 .notice { padding: 8px 16px; background: #fff4e5; border-bottom: 1px solid #f3d9a4; }
 .stages { display: flex; gap: 0; margin: 0; padding: 0 16px; list-style: none; background: #fff; border-bottom: 1px solid var(--line); }
 .stage { flex: 1; padding: 8px 12px; border-left: 4px solid var(--line); }
