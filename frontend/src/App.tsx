@@ -3,6 +3,7 @@ import { api } from "./api";
 import { MetricsFooter } from "./components/MetricsFooter";
 import { ObjectPanel } from "./components/ObjectPanel";
 import { SceneInput } from "./components/SceneInput";
+import { SceneViewport } from "./components/SceneViewport";
 import { StageProgress } from "./components/StageProgress";
 import { applyReview, beginRun, fromSnapshot, initialState, reduceEvent, select } from "./reducer";
 import type { RunEvent, ViewState } from "./types";
@@ -82,7 +83,12 @@ export default function App() {
       {(notice || state.error) && <div className="notice">{state.error ?? notice}</div>}
       <StageProgress stages={state.stages} />
       <main>
-        <div className="viewport-placeholder">3D viewport arrives in the next task</div>
+        <SceneViewport
+          geometry={state.geometry}
+          objects={state.objects}
+          selected={state.selected}
+          onSelect={(n) => setState((s) => select(s, n))}
+        />
         <ObjectPanel
           objects={objects}
           selected={state.selected}

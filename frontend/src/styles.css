@@ -43,3 +43,5 @@ li.checking .dot { background: #3e63dd; animation: pulse 1s infinite alternate; 
 .metric .label { display: block; font-size: 11px; color: var(--muted); text-transform: uppercase; }
 .metric .value { font-weight: 600; }
 .rate-card { margin-left: auto; align-self: center; font-size: 11px; color: var(--muted); }
+.viewport canvas { display: block; }
+.viewport-empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); pointer-events: none; }
