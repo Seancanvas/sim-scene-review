@@ -68,6 +68,25 @@ def test_unknown_api_path_and_wrong_method_use_error_shape(client):
     assert client.get("/api/scenes").json()["error"]["code"] == "http_405"
 
 
+def test_frontend_served_without_swallowing_api_errors(tmp_path, monkeypatch):
+    (tmp_path / "assets").mkdir()
+    (tmp_path / "index.html").write_text("<!doctype html><title>t</title>")
+    (tmp_path / "assets" / "app.js").write_text("console.log(1)")
+    (tmp_path / "favicon.svg").write_text("<svg/>")
+    monkeypatch.setenv("FRONTEND_DIST", str(tmp_path))
+    with TestClient(create_app()) as c:
+        res = c.get("/")
+        assert res.status_code == 200 and "<title>t</title>" in res.text
+        assert c.get("/assets/app.js").status_code == 200
+        assert c.get("/favicon.svg").status_code == 200
+        res = c.get("/api/scenes")
+        assert res.status_code == 405 and res.json()["error"]["code"] == "http_405"
+        res = c.get("/api/nope")
+        assert res.status_code == 404 and res.json()["error"]["code"] == "http_404"
+        res = c.get("/missing.txt")
+        assert res.status_code == 404 and res.json()["error"]["code"] == "http_404"
+
+
 def test_upload_rejects_non_mjcf(client):
     res = client.post("/api/scenes/upload", files={"file": ("page.xml", b"<html><body>hi</body></html>", "text/xml")})
     assert res.status_code == 400

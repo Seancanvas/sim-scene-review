@@ -8,7 +8,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -52,7 +52,22 @@ def create_app() -> FastAPI:
 
     dist = Path(os.environ.get("FRONTEND_DIST", str(DEFAULT_DIST)))
     if dist.is_dir():
-        app.mount("/", StaticFiles(directory=str(dist), html=True), name="frontend")
+        # Only the asset folder is a mount; API paths must never fall into a
+        # catch-all, or a wrong-method call would answer 404 instead of 405.
+        if (dist / "assets").is_dir():
+            app.mount("/assets", StaticFiles(directory=str(dist / "assets")), name="assets")
+
+        @app.get("/", include_in_schema=False)
+        async def _index():
+            return FileResponse(dist / "index.html")
+
+        @app.get("/{filename}", include_in_schema=False)
+        async def _root_file(filename: str):
+            # single-segment root files only (favicon, icons); two-segment paths like /api/x never match here
+            target = dist / filename
+            if target.is_file():
+                return FileResponse(target)
+            raise ApiError(404, "http_404", "Not Found")
     return app
 
 

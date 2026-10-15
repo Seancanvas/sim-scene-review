@@ -43,7 +43,7 @@ inertia and zero mass, so those surface at stage 1.
   after each run the page re-reads the server snapshot so decisions and the
   scene version are authoritative.
 - **One image** — Node builds the frontend; `python:3.12-slim` serves the
-  API and the static files from one origin.
+  API, `index.html` and `/assets` from one origin.
 
 ## What is measured
 
@@ -76,7 +76,7 @@ inertia and zero mass, so those surface at stage 1.
   every number to 6 significant digits.
 - No rate limiting. A scene keeps only its last 20 runs.
 - Only MJCF. USD and zip uploads with mesh files are the obvious next inputs.
-- No end-to-end browser tests; the backend (75 tests) and the frontend (16
+- No end-to-end browser tests; the backend (76 tests) and the frontend (16
   tests, including the reducer) are unit-tested.
 
 ## Sample scene
