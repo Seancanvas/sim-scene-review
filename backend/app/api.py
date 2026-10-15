@@ -1,0 +1,180 @@
+"""HTTP surface. Handlers are async so they can schedule pipeline work on the
+loop; the CPU-bound pipeline itself runs in a worker thread."""
+from __future__ import annotations
+
+import asyncio
+import json
+from typing import Literal
+
+from fastapi import APIRouter, Depends, File, Request, UploadFile
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
+
+from . import pipeline
+from .fixes import apply_fix
+from .loader import MAX_UPLOAD_BYTES, SceneError, canonicalise, compile_scene, scene_version
+from .runs import Registry, idempotency_key, rerun_cost
+from .samples import SAMPLES, load_sample
+
+router = APIRouter(prefix="/api")
+KEEPALIVE_SECONDS = 15.0
+
+
+class ApiError(Exception):
+    def __init__(self, status: int, code: str, message: str):
+        super().__init__(message)
+        self.status = status
+        self.code = code
+        self.message = message
+
+
+def registry(request: Request) -> Registry:
+    return request.app.state.registry
+
+
+def _scene(reg: Registry, scene_id: str):
+    scene = reg.scene(scene_id)
+    if scene is None:
+        raise ApiError(404, "scene_not_found", f"no scene {scene_id}")
+    return scene
+
+
+def _start(request: Request, scene, run, **kwargs) -> None:
+    task = asyncio.create_task(asyncio.to_thread(pipeline.execute, scene, run, **kwargs))
+    tasks = request.app.state.tasks
+    tasks.add(task)
+    task.add_done_callback(tasks.discard)
+
+
+def _create(reg: Registry, text: str) -> dict:
+    try:
+        xml = canonicalise(text)
+        compiled = compile_scene(xml)
+    except SceneError as e:
+        raise ApiError(400, e.code, e.message)
+    scene = reg.add_scene(compiled.xml, compiled.version, compiled.objects)
+    return {"scene_id": scene.scene_id, "version": scene.version}
+
+
+class CreateScene(BaseModel):
+    sample: str
+
+
+class FixBody(BaseModel):
+    fix_id: str
+
+
+class ReviewBody(BaseModel):
+    decision: Literal["approve", "reject"]
+
+
+@router.get("/health")
+async def health():
+    return {"ok": True}
+
+
+@router.get("/samples")
+async def samples():
+    return [{"id": key, "label": label} for key, label in SAMPLES.items()]
+
+
+@router.post("/scenes", status_code=201)
+async def create_from_sample(body: CreateScene, reg: Registry = Depends(registry)):
+    if body.sample not in SAMPLES:
+        raise ApiError(404, "sample_not_found", f"no sample {body.sample!r}")
+    return _create(reg, load_sample(body.sample))
+
+
+@router.post("/scenes/upload", status_code=201)
+async def create_from_upload(file: UploadFile = File(...), reg: Registry = Depends(registry)):
+    raw = await file.read(MAX_UPLOAD_BYTES + 1)
+    if len(raw) > MAX_UPLOAD_BYTES:
+        raise ApiError(413, "too_large", "scene must be 1 MB or smaller")
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        raise ApiError(400, "not_utf8", "upload must be UTF-8 encoded XML")
+    return _create(reg, text)
+
+
+@router.get("/scenes/{scene_id}")
+async def get_scene(scene_id: str, reg: Registry = Depends(registry)):
+    scene = _scene(reg, scene_id)
+    with scene.lock:
+        return scene.snapshot()
+
+
+@router.post("/scenes/{scene_id}/runs", status_code=202)
+async def start_run(scene_id: str, request: Request, reg: Registry = Depends(registry)):
+    scene = _scene(reg, scene_id)
+    run = reg.add_run(scene_id)
+    with scene.lock:
+        scene.current_run_id = run.run_id
+    _start(request, scene, run)
+    return {"run_id": run.run_id}
+
+
+@router.post("/scenes/{scene_id}/objects/{name}/fix", status_code=202)
+async def fix_object(scene_id: str, name: str, body: FixBody, request: Request, reg: Registry = Depends(registry)):
+    scene = _scene(reg, scene_id)
+    with scene.lock:
+        if name not in scene.objects:
+            raise ApiError(404, "object_not_found", f"no object {name!r}")
+        key = idempotency_key(scene.version, name, body.fix_id)
+        cached = scene.fix_runs.get(key)
+        if cached is not None:
+            scene.saved += rerun_cost()
+            return {"run_id": cached, "cached": True}
+        try:
+            xml = apply_fix(scene.xml, name, body.fix_id)
+        except SceneError as e:
+            raise ApiError(400 if e.code == "unknown_fix" else 404, e.code, e.message)
+        run = reg.add_run(scene_id, name)
+        # Asking for the same fix again on the scene this fix produces is the
+        # same work, so both the input and the output version point at this run.
+        for version in (scene.version, scene_version(xml)):
+            scene.fix_runs[idempotency_key(version, name, body.fix_id)] = run.run_id
+        scene.manual_fixes += 1
+        scene.current_run_id = run.run_id
+    _start(request, scene, run, xml=xml, only=name)
+    return {"run_id": run.run_id, "cached": False}
+
+
+@router.post("/scenes/{scene_id}/objects/{name}/review")
+async def review_object(scene_id: str, name: str, body: ReviewBody, reg: Registry = Depends(registry)):
+    scene = _scene(reg, scene_id)
+    with scene.lock:
+        state = scene.objects.get(name)
+        if state is None:
+            raise ApiError(404, "object_not_found", f"no object {name!r}")
+        state.decision = "approved" if body.decision == "approve" else "rejected"
+        scene.mark_usable_if_done()
+        return {"object": state.to_dict(), "metrics": scene.metrics()}
+
+
+async def _stream(run, last_id: int):
+    while True:
+        events = await asyncio.to_thread(run.wait_for, last_id, KEEPALIVE_SECONDS)
+        for event in events:
+            yield f"id: {event.id}\nevent: {event.type}\ndata: {json.dumps(event.data)}\n\n"
+            last_id = event.id
+        if run.done and last_id >= run.last_id:
+            return
+        if not events:
+            yield ": keepalive\n\n"
+
+
+@router.get("/runs/{run_id}/events")
+async def run_events(run_id: str, request: Request, reg: Registry = Depends(registry)):
+    run = reg.run(run_id)
+    if run is None:
+        raise ApiError(404, "run_not_found", f"no run {run_id}")
+    try:
+        last_id = int(request.headers.get("last-event-id", "0") or 0)
+    except ValueError:
+        last_id = 0
+    return StreamingResponse(
+        _stream(run, last_id),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
