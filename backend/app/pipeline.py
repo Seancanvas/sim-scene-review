@@ -24,21 +24,32 @@ def _ms(started: float) -> int:
 
 
 def execute(scene: SceneRecord, run: RunRecord, xml: Optional[str] = None, only: Optional[str] = None) -> None:
+    saved = {}
     try:
-        _execute(scene, run, xml, only)
+        _execute(scene, run, xml, only, saved)
     except Exception as e:  # noqa: BLE001 - the client must always see an ending
+        with scene.lock:
+            for name, (status, findings) in saved.items():
+                state = scene.objects.get(name)
+                if state is not None:
+                    state.status, state.findings = status, findings
+        for name, (status, _) in saved.items():
+            run.emit("object_status", {"object": name, "status": status})
         run.emit("run_failed", {"stage": "internal", "code": "internal_error", "message": str(e)})
     finally:
         run.finish()
 
 
-def _execute(scene, run, xml, only):
+def _execute(scene, run, xml, only, saved):
     started = time.monotonic()
     run.emit("stage_started", {"stage": "load"})
     try:
         compiled = compile_scene(xml if xml is not None else scene.xml)
     except SceneError as e:
         run.emit("run_failed", {"stage": "load", "code": e.code, "message": e.message})
+        return
+    if only is not None and all(o.name != only for o in compiled.objects):
+        run.emit("run_failed", {"stage": "load", "code": "object_missing_after_fix", "message": f"{only} is not in the fixed scene"})
         return
     with scene.lock:
         if xml is not None:
@@ -51,6 +62,7 @@ def _execute(scene, run, xml, only):
         scene.charge(RATE_COMPILE)
         targets = [o for o in compiled.objects if only is None or o.name == only]
         for obj in targets:
+            saved[obj.name] = (scene.objects[obj.name].status, scene.objects[obj.name].findings)
             # clear now, not at the end: a snapshot taken mid-run must not carry
             # findings that the stream is about to replay
             scene.objects[obj.name].status = "checking"

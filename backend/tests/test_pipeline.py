@@ -97,3 +97,34 @@ def test_scene_without_objects_completes():
     run = run_full(reg, scene)
     assert types(run)[-1] == "run_completed"
     assert scene.metrics()["time_to_usable_s"] is None
+
+
+def test_internal_failure_restores_object_state(tabletop, monkeypatch):
+    reg, scene = tabletop
+    run_full(reg, scene)
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(pipeline, "run_static_rules", boom)
+    run = run_full(reg, scene)
+    last = run.events_after(0)[-1]
+    assert last.type == "run_failed" and last.data["code"] == "internal_error"
+    assert all(state.status != "checking" for state in scene.objects.values())
+    assert {f.rule for f in scene.objects["mug_a"].findings} == {"zero_mass"}
+
+
+def test_rerun_whose_fix_removes_the_object_fails_untouched(tabletop):
+    import re
+
+    reg, scene = tabletop
+    run_full(reg, scene)
+    before = (scene.version, scene.cost)
+    xml = re.sub(r'<body name="mug_a".*?</body>', "", scene.xml, count=1, flags=re.S)
+    assert xml != scene.xml
+    run = reg.add_run(scene.scene_id, "mug_a")
+    pipeline.execute(scene, run, xml=xml, only="mug_a")
+    last = run.events_after(0)[-1]
+    assert last.type == "run_failed" and last.data["code"] == "object_missing_after_fix"
+    assert (scene.version, scene.cost) == before
+    assert {f.rule for f in scene.objects["mug_a"].findings} == {"zero_mass"}
