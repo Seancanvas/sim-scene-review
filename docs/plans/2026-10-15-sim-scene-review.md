@@ -513,7 +513,9 @@ def test_scale_warns_without_fix_when_simply_huge():
 
 
 def test_scale_warns_for_tiny_object():
-    found = findings_for(ball(geom='size="0.001"'), implausible_scale)
+    # not ball(): that helper already sets size, and a duplicate attribute is invalid XML
+    dot = '<body name="dot" pos="0 0 1"><joint type="free"/><geom type="sphere" size="0.001"/></body>'
+    found = findings_for(dot, implausible_scale)
     assert [(f.rule, f.severity) for f in found] == [("implausible_scale", "warning")]
 
 
