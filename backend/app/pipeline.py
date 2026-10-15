@@ -2,6 +2,7 @@
 Runs on a worker thread; it only touches the scene under scene.lock."""
 from __future__ import annotations
 
+import logging
 import time
 from typing import Optional
 
@@ -18,6 +19,8 @@ from .runs import (
     SceneRecord,
 )
 
+log = logging.getLogger("sim_scene")
+
 
 def _ms(started: float) -> int:
     return int((time.monotonic() - started) * 1000)
@@ -27,7 +30,8 @@ def execute(scene: SceneRecord, run: RunRecord, xml: Optional[str] = None, only:
     saved = {}
     try:
         _execute(scene, run, xml, only, saved)
-    except Exception as e:  # noqa: BLE001 - the client must always see an ending
+    except Exception:  # noqa: BLE001 - the client must always see an ending
+        log.exception("run %s failed", run.run_id)
         with scene.lock:
             for name, (status, findings) in saved.items():
                 state = scene.objects.get(name)
@@ -35,7 +39,7 @@ def execute(scene: SceneRecord, run: RunRecord, xml: Optional[str] = None, only:
                     state.status, state.findings = status, findings
         for name, (status, _) in saved.items():
             run.emit("object_status", {"object": name, "status": status})
-        run.emit("run_failed", {"stage": "internal", "code": "internal_error", "message": str(e)})
+        run.emit("run_failed", {"stage": "internal", "code": "internal_error", "message": "internal error; see server log"})
     finally:
         run.finish()
 

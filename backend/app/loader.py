@@ -11,6 +11,11 @@ import mujoco
 from .models import ObjectInfo
 
 MAX_UPLOAD_BYTES = 1_000_000
+# A compiled scene past these is a denial-of-service, not a review candidate.
+MAX_BODIES = 500
+MAX_GEOMS = 2000
+MAX_MESH_VERTICES = 200_000
+MAX_ARENA_BYTES = 64 * 1024 * 1024
 
 _INCLUDE = re.compile(r"<\s*include\b", re.IGNORECASE)
 _FILE_ATTR = re.compile(r"\bfile\s*=", re.IGNORECASE)
@@ -69,9 +74,22 @@ def compile_scene(xml: str) -> CompiledScene:
         model = mujoco.MjSpec.from_string(xml).compile()
     except ValueError as e:
         raise SceneError("compile_error", str(e))
+    check_size(model)
     data = mujoco.MjData(model)
     mujoco.mj_forward(model, data)
     return CompiledScene(xml, scene_version(xml), model, data, list_objects(model))
+
+
+def check_size(model: mujoco.MjModel) -> None:
+    limits = (
+        ("bodies", model.nbody, MAX_BODIES),
+        ("geoms", model.ngeom, MAX_GEOMS),
+        ("mesh vertices", model.nmeshvert, MAX_MESH_VERTICES),
+        ("arena bytes", model.narena, MAX_ARENA_BYTES),
+    )
+    for what, count, cap in limits:
+        if count > cap:
+            raise SceneError("scene_too_large", f"scene has {count} {what}; the limit is {cap}")
 
 
 def list_objects(model: mujoco.MjModel) -> list:

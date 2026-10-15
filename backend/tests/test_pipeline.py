@@ -110,6 +110,7 @@ def test_internal_failure_restores_object_state(tabletop, monkeypatch):
     run = run_full(reg, scene)
     last = run.events_after(0)[-1]
     assert last.type == "run_failed" and last.data["code"] == "internal_error"
+    assert "boom" not in last.data["message"]  # the traceback goes to the log, not the client
     assert all(state.status != "checking" for state in scene.objects.values())
     assert {f.rule for f in scene.objects["mug_a"].findings} == {"zero_mass"}
 

@@ -104,6 +104,7 @@ class SceneRecord:
         self.reruns = 0
         self.fix_runs = {}  # idempotency key -> run_id
         self.current_run_id: Optional[str] = None
+        self.current_run: Optional[RunRecord] = None
         self.lock = threading.Lock()
         self._now = time.time
 
@@ -130,6 +131,7 @@ class SceneRecord:
             "scene_id": self.scene_id,
             "version": self.version,
             "current_run_id": self.current_run_id,
+            "current_run_done": self.current_run is None or self.current_run.done,
             "objects": [o.to_dict() for o in self.objects.values()],
             "geometry": self.geometry,
             "metrics": self.metrics(),

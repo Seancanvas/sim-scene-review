@@ -100,15 +100,14 @@ def implausible_scale(model, data, obj):
         fix = None
         if MIN_EXTENT_M <= biggest / 1000.0 <= MAX_EXTENT_M:
             fix = Fix("scale_mm_to_m", "Scale geometry by 0.001 (millimetres → metres)")
-        return [
-            Finding(
-                obj.name,
-                "implausible_scale",
-                "error" if fix else "warning",
-                f"{obj.name} spans about {biggest:.0f} m; it looks like it was modelled in millimetres.",
-                fix,
+        if fix:
+            message = f"{obj.name} spans about {biggest:.0f} m; it looks like it was modelled in millimetres."
+        else:
+            message = (
+                f"{obj.name} spans about {biggest:.0f} m; that is implausibly large for a "
+                "tabletop/room-scale scene; check its units."
             )
-        ]
+        return [Finding(obj.name, "implausible_scale", "error" if fix else "warning", message, fix)]
     if biggest < MIN_EXTENT_M:
         return [
             Finding(
@@ -132,6 +131,6 @@ def run_static_rules(model, data, objects):
                 findings.extend(rule(model, data, obj))
             except Exception as e:  # noqa: BLE001 - one broken rule must not sink the run
                 findings.append(
-                    Finding(obj.name, "check_error", "warning", f"{rule.__name__} failed: {e}")
+                    Finding(obj.name, "check_error", "warning", f"{rule.__name__} failed: {type(e).__name__}: {e}")
                 )
     return findings

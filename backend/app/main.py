@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
@@ -32,6 +33,8 @@ def _error(status: int, code: str, message: str) -> JSONResponse:
 
 
 def create_app() -> FastAPI:
+    if not logging.getLogger().handlers:
+        logging.basicConfig(level=logging.INFO)
     app = FastAPI(title="Sim-Scene Review", docs_url="/api/docs", openapi_url="/api/openapi.json", lifespan=_lifespan)
     app.state.registry = Registry()
     app.state.tasks = set()
@@ -50,6 +53,12 @@ def create_app() -> FastAPI:
         # unknown paths, 405s and bad path params otherwise answer with Starlette's {"detail": ...}
         return _error(exc.status_code, f"http_{exc.status_code}", str(exc.detail))
 
+    @app.exception_handler(Exception)
+    async def _unexpected(request: Request, exc: Exception):
+        # anything the handlers did not expect; the traceback goes to the log, never the client
+        logging.getLogger("sim_scene").exception("unhandled error on %s %s", request.method, request.url.path)
+        return _error(500, "internal_error", "internal error")
+
     dist = Path(os.environ.get("FRONTEND_DIST", str(DEFAULT_DIST)))
     if dist.is_dir():
         # Only the asset folder is a mount; API paths must never fall into a
@@ -64,8 +73,8 @@ def create_app() -> FastAPI:
         @app.get("/{filename}", include_in_schema=False)
         async def _root_file(filename: str):
             # single-segment root files only (favicon, icons); two-segment paths like /api/x never match here
-            target = dist / filename
-            if target.is_file():
+            target = (dist / filename).resolve()
+            if target.parent == dist.resolve() and target.is_file():
                 return FileResponse(target)
             raise ApiError(404, "http_404", "Not Found")
     return app

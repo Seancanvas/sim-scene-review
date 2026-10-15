@@ -62,6 +62,16 @@ def test_snapshot_serialises_findings():
     assert snap["scene_id"] == "scn_1"
     assert snap["objects"][0]["findings"][0]["rule"] == "zero_mass"
     assert snap["metrics"]["cost"] == 0.0
+    assert snap["current_run_done"] is True
+
+
+def test_snapshot_reports_whether_the_current_run_is_done():
+    scene = SceneRecord("scn_1", "<mujoco/>", "v1", OBJECTS, created_at=0.0)
+    run = RunRecord("run_1", "scn_1")
+    scene.current_run_id, scene.current_run = run.run_id, run
+    assert scene.snapshot()["current_run_done"] is False
+    run.finish()
+    assert scene.snapshot()["current_run_done"] is True
 
 
 def test_registry_evicts_expired_and_oldest(monkeypatch):

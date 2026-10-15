@@ -6,9 +6,10 @@ import asyncio
 import json
 from typing import Literal
 
-from fastapi import APIRouter, Depends, File, Request, UploadFile
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from starlette.datastructures import UploadFile
 
 from . import pipeline
 from .fixes import apply_fix
@@ -18,6 +19,8 @@ from .samples import SAMPLES, load_sample
 
 router = APIRouter(prefix="/api")
 KEEPALIVE_SECONDS = 15.0
+# multipart framing and the field headers around the file itself
+MULTIPART_OVERHEAD_BYTES = 200_000
 
 
 class ApiError(Exception):
@@ -51,10 +54,14 @@ def _start(request: Request, scene, run, **kwargs) -> None:
     task.add_done_callback(tasks.discard)
 
 
-def _create(reg: Registry, text: str) -> dict:
+def _compile(text: str):
+    return compile_scene(canonicalise(text))
+
+
+async def _create(reg: Registry, text: str) -> dict:
     try:
-        xml = canonicalise(text)
-        compiled = compile_scene(xml)
+        # compiling a large scene takes a while; keep the loop answering meanwhile
+        compiled = await asyncio.to_thread(_compile, text)
     except SceneError as e:
         raise ApiError(400, e.code, e.message)
     scene = reg.add_scene(compiled.xml, compiled.version, compiled.objects)
@@ -87,11 +94,26 @@ async def samples():
 async def create_from_sample(body: CreateScene, reg: Registry = Depends(registry)):
     if body.sample not in SAMPLES:
         raise ApiError(404, "sample_not_found", f"no sample {body.sample!r}")
-    return _create(reg, load_sample(body.sample))
+    return await _create(reg, load_sample(body.sample))
 
 
 @router.post("/scenes/upload", status_code=201)
-async def create_from_upload(file: UploadFile = File(...), reg: Registry = Depends(registry)):
+async def create_from_upload(request: Request, reg: Registry = Depends(registry)):
+    # The form is parsed here rather than through File(...): FastAPI reads a
+    # declared body before the handler runs, which would spool an oversize
+    # upload to disk before this header check could refuse it.
+    declared = request.headers.get("content-length")
+    if declared is not None:
+        try:
+            too_big = int(declared) > MAX_UPLOAD_BYTES + MULTIPART_OVERHEAD_BYTES
+        except ValueError:
+            too_big = False
+        if too_big:
+            raise ApiError(413, "too_large", "scene must be 1 MB or smaller")
+    form = await request.form()
+    file = form.get("file")
+    if not isinstance(file, UploadFile):
+        raise ApiError(422, "validation_error", "multipart field 'file' is required")
     raw = await file.read(MAX_UPLOAD_BYTES + 1)
     if len(raw) > MAX_UPLOAD_BYTES:
         raise ApiError(413, "too_large", "scene must be 1 MB or smaller")
@@ -99,7 +121,7 @@ async def create_from_upload(file: UploadFile = File(...), reg: Registry = Depen
         text = raw.decode("utf-8")
     except UnicodeDecodeError:
         raise ApiError(400, "not_utf8", "upload must be UTF-8 encoded XML")
-    return _create(reg, text)
+    return await _create(reg, text)
 
 
 @router.get("/scenes/{scene_id}")
@@ -116,7 +138,7 @@ async def start_run(scene_id: str, request: Request, reg: Registry = Depends(reg
         if _active_run(reg, scene) is not None:
             raise ApiError(409, "run_in_progress", "wait for the current run to finish")
         run = reg.add_run(scene_id)
-        scene.current_run_id = run.run_id
+        scene.current_run_id, scene.current_run = run.run_id, run
     _start(request, scene, run)
     return {"run_id": run.run_id}
 
@@ -140,17 +162,22 @@ async def fix_object(scene_id: str, name: str, body: FixBody, request: Request, 
                 return {"run_id": cached, "cached": True}
         if _active_run(reg, scene) is not None:
             raise ApiError(409, "run_in_progress", "wait for the current run to finish")
-        try:
-            xml = apply_fix(scene.xml, name, body.fix_id)
-        except SceneError as e:
-            raise ApiError(400 if e.code == "unknown_fix" else 404, e.code, e.message)
+        base_xml, base_version = scene.xml, scene.version
+    try:
+        # MjSpec work off the loop and outside the lock; the lock is re-taken below
+        xml = await asyncio.to_thread(apply_fix, base_xml, name, body.fix_id)
+    except SceneError as e:
+        raise ApiError(400 if e.code == "unknown_fix" else 404, e.code, e.message)
+    with scene.lock:
+        if scene.version != base_version or _active_run(reg, scene) is not None:
+            raise ApiError(409, "run_in_progress", "the scene changed while the fix was prepared; try again")
         run = reg.add_run(scene_id, name)
         # Asking for the same fix again on the scene this fix produces is the
         # same work, so both the input and the output version point at this run.
-        for version in (scene.version, scene_version(xml)):
+        for version in (base_version, scene_version(xml)):
             scene.fix_runs[idempotency_key(version, name, body.fix_id)] = run.run_id
         scene.manual_fixes += 1
-        scene.current_run_id = run.run_id
+        scene.current_run_id, scene.current_run = run.run_id, run
     _start(request, scene, run, xml=xml, only=name)
     return {"run_id": run.run_id, "cached": False}
 

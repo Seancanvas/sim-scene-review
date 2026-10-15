@@ -7,10 +7,10 @@ RUN npm run build
 
 FROM python:3.12-slim
 WORKDIR /app
-COPY backend/requirements.txt ./
+COPY backend/requirements.txt backend/constraints.txt ./
 # Without this, `import mujoco` tries to load GLFW, which needs libX11 the slim image lacks.
 ENV MUJOCO_GL=disable
-RUN pip install --no-cache-dir -r requirements.txt \
+RUN pip install --no-cache-dir -c constraints.txt -r requirements.txt \
  && python -c "import mujoco, fastapi; print(mujoco.__version__)"
 COPY backend/ ./
 COPY --from=web /web/dist ./frontend_dist

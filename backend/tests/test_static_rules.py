@@ -88,6 +88,7 @@ def test_scale_fires_with_fix_for_millimetre_box():
     found = findings_for(tray, implausible_scale)
     assert [(f.rule, f.severity) for f in found] == [("implausible_scale", "error")]
     assert found[0].fix.fix_id == "scale_mm_to_m"
+    assert "millimetres" in found[0].message
 
 
 def test_scale_warns_without_fix_when_simply_huge():
@@ -95,6 +96,7 @@ def test_scale_warns_without_fix_when_simply_huge():
     found = findings_for(huge, implausible_scale)
     assert [(f.rule, f.severity) for f in found] == [("implausible_scale", "warning")]
     assert found[0].fix is None
+    assert "check its units" in found[0].message and "millimetres" not in found[0].message
 
 
 def test_scale_warns_for_tiny_object():
@@ -116,4 +118,4 @@ def test_broken_rule_becomes_check_error(monkeypatch):
     monkeypatch.setattr(static_rules, "STATIC_RULES", (explode,))
     found = findings_for(ball())
     assert [(f.rule, f.severity) for f in found] == [("check_error", "warning")]
-    assert "explode" in found[0].message and "boom" in found[0].message
+    assert found[0].message == "explode failed: RuntimeError: boom"

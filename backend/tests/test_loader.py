@@ -1,5 +1,6 @@
 import pytest
 
+from app import loader
 from app.loader import SceneError, canonicalise, compile_scene, scene_version, validate_xml
 from tests.scenes import wrap
 
@@ -40,6 +41,23 @@ def test_compile_error_is_scene_error():
         compile_scene(wrap(massless))
     assert e.value.code == "compile_error"
     assert "mass" in e.value.message
+
+
+def boxes(count):
+    return "".join(
+        f'<body name="b{i}" pos="{i * 0.3} 0 1"><geom type="box" size="0.1 0.1 0.1"/></body>' for i in range(count)
+    )
+
+
+def test_rejects_scene_with_too_many_bodies():
+    with pytest.raises(SceneError) as e:
+        compile_scene(wrap(boxes(loader.MAX_BODIES)))  # plus the world body makes one too many
+    assert e.value.code == "scene_too_large"
+    assert "bodies" in e.value.message
+
+
+def test_accepts_a_small_scene():
+    assert len(compile_scene(wrap(boxes(10))).objects) == 10
 
 
 def test_lists_objects_and_movability():
