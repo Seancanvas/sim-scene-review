@@ -1,4 +1,4 @@
-import type { ObjectView } from "../types";
+import type { Fix, ObjectView } from "../types";
 
 interface Props {
   objects: ObjectView[];
@@ -7,6 +7,7 @@ interface Props {
   onSelect: (name: string) => void;
   onReview: (name: string, decision: "approve" | "reject") => void;
   onFix: (name: string, fixId: string) => void;
+  applied: Fix[];
 }
 
 export function statusClass(o: ObjectView): string {
@@ -18,7 +19,7 @@ export function statusClass(o: ObjectView): string {
   return o.status === "ok" ? "ok" : "pending";
 }
 
-export function ObjectPanel({ objects, selected, busy, onSelect, onReview, onFix }: Props) {
+export function ObjectPanel({ objects, selected, busy, onSelect, onReview, onFix, applied }: Props) {
   const current = objects.find((o) => o.name === selected) ?? null;
   return (
     <aside className="panel">
@@ -52,6 +53,17 @@ export function ObjectPanel({ objects, selected, busy, onSelect, onReview, onFix
               )}
             </div>
           ))}
+          {applied.length > 0 && (
+            <div className="applied">
+              <h3>Applied fixes</h3>
+              {applied.map((fix) => (
+                <div key={fix.fix_id}>
+                  <span>{fix.label}</span>
+                  <button onClick={() => onFix(current.name, fix.fix_id)}>Re-apply</button>
+                </div>
+              ))}
+            </div>
+          )}
           <div className="actions">
             <button disabled={busy || current.decision === "approved"} onClick={() => onReview(current.name, "approve")}>
               Approve

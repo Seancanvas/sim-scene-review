@@ -46,3 +46,6 @@ li.checking .dot { background: #3e63dd; animation: pulse 1s infinite alternate; 
 .rate-card { margin-left: auto; align-self: center; font-size: 11px; color: var(--muted); }
 .viewport canvas { display: block; }
 .viewport-empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); pointer-events: none; }
+.applied { margin-top: 12px; }
+.applied h3 { font-size: 12px; text-transform: uppercase; color: var(--muted); margin: 0 0 6px; }
+.applied div { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 13px; padding: 4px 0; }

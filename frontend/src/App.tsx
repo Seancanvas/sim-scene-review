@@ -5,7 +5,7 @@ import { ObjectPanel } from "./components/ObjectPanel";
 import { SceneInput } from "./components/SceneInput";
 import { SceneViewport } from "./components/SceneViewport";
 import { StageProgress } from "./components/StageProgress";
-import { applyReview, beginRun, fromSnapshot, initialState, reduceEvent, select } from "./reducer";
+import { applyReview, beginRun, fromSnapshot, initialState, recordAppliedFix, reduceEvent, select } from "./reducer";
 import type { RunEvent, ViewState } from "./types";
 import { useRunStream } from "./useRunStream";
 
@@ -35,7 +35,7 @@ export default function App() {
       // the version are authoritative after every run.
       if (event.type === "run_completed" || event.type === "run_failed") {
         const id = sceneFromHash();
-        if (id) api.snapshot(id).then((snap) => setState((s) => ({ ...fromSnapshot(snap), stages: s.stages, running: false, selected: s.selected, error: s.error }))).catch(() => undefined);
+        if (id) api.snapshot(id).then((snap) => setState((s) => ({ ...fromSnapshot(snap), stages: s.stages, running: false, selected: s.selected, error: s.error, appliedFixes: s.appliedFixes }))).catch(() => undefined);
       }
     },
     [],
@@ -53,11 +53,12 @@ export default function App() {
 
   const onFix = (name: string, fixId: string) => {
     if (!state.sceneId) return;
+    const fix = state.objects[name]?.findings.find((f) => f.fix?.fix_id === fixId)?.fix ?? { fix_id: fixId, label: fixId };
     api
       .fix(state.sceneId, name, fixId)
       .then((r) => {
-        if (r.cached) setNotice(`Already ran this fix on this version — reusing run ${r.run_id}, nothing charged.`);
-        else setState((s) => beginRun(s, r.run_id, name));
+        if (r.cached) setNotice(`Already applied on this scene version — reusing run ${r.run_id}, nothing charged.`);
+        else setState((s) => recordAppliedFix(beginRun(s, r.run_id, name), name, fix));
       })
       .catch((e) => fail(e.message));
   };
@@ -96,6 +97,7 @@ export default function App() {
           onSelect={(n) => setState((s) => select(s, n))}
           onReview={onReview}
           onFix={onFix}
+          applied={state.appliedFixes[state.selected ?? ""] ?? []}
         />
       </main>
       <MetricsFooter metrics={state.metrics} />

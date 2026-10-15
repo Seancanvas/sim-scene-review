@@ -62,6 +62,8 @@ export interface ViewState {
   metrics: Metrics | null;
   error: string | null;
   selected: string | null;
+  /** object name -> fixes applied in this page session, oldest first */
+  appliedFixes: Record<string, Fix[]>;
 }
 
 export type RunEvent =

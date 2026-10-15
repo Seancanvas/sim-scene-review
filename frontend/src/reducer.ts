@@ -1,4 +1,4 @@
-import type { GeometryObject, Metrics, ObjectView, RunEvent, Snapshot, Stage, StageView, ViewState } from "./types";
+import type { Fix, GeometryObject, Metrics, ObjectView, RunEvent, Snapshot, Stage, StageView, ViewState } from "./types";
 import { STAGES } from "./types";
 
 const freshStages = (): Record<Stage, StageView> =>
@@ -7,7 +7,7 @@ const freshStages = (): Record<Stage, StageView> =>
 export function initialState(): ViewState {
   return {
     sceneId: null, runId: null, running: false, stages: freshStages(),
-    objects: {}, order: [], geometry: [], metrics: null, error: null, selected: null,
+    objects: {}, order: [], geometry: [], metrics: null, error: null, selected: null, appliedFixes: {},
   };
 }
 
@@ -29,20 +29,20 @@ export function fromSnapshot(snapshot: Snapshot): ViewState {
   };
 }
 
-/**
- * A new run starts and the stages reset. A full run clears every object's findings. An object
- * rerun keeps the previous findings on screen (marked checking) until the run completes and the
- * snapshot replaces them, so the fix button stays pressable — a second press is what the server
- * deduplicates.
- */
+/** A new run starts: stages reset; an object rerun clears only that object. */
 export function beginRun(state: ViewState, runId: string, onlyObject: string | null): ViewState {
   const objects = { ...state.objects };
   for (const name of onlyObject ? [onlyObject] : state.order) {
-    if (objects[name]) {
-      objects[name] = { ...objects[name], status: "checking", findings: onlyObject ? objects[name].findings : [] };
-    }
+    if (objects[name]) objects[name] = { ...objects[name], status: "checking", findings: [] };
   }
   return { ...state, runId, running: true, stages: freshStages(), error: null, objects };
+}
+
+/** Fixes applied in this page session, oldest first, one entry per fix_id. */
+export function recordAppliedFix(state: ViewState, object: string, fix: Fix): ViewState {
+  const existing = state.appliedFixes[object] ?? [];
+  if (existing.some((f) => f.fix_id === fix.fix_id)) return state;
+  return { ...state, appliedFixes: { ...state.appliedFixes, [object]: [...existing, fix] } };
 }
 
 export function select(state: ViewState, name: string | null): ViewState {

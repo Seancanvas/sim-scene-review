@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyReview, beginRun, fromSnapshot, initialState, reduceEvent, select } from "./reducer";
+import { applyReview, beginRun, fromSnapshot, initialState, recordAppliedFix, reduceEvent, select } from "./reducer";
 import type { Finding, Metrics, Snapshot } from "./types";
 
 const metrics: Metrics = { time_to_usable_s: null, manual_fixes: 0, reruns: 0, cost: 0, saved_by_idempotency: 0 };
@@ -44,15 +44,14 @@ describe("reducer", () => {
     expect(s.objects.mug.status).toBe("checking");
   });
 
-  it("beginRun resets stages, keeps the rerun object's findings and marks it checking", () => {
+  it("beginRun resets stages and clears the target object's findings", () => {
     let s = fromSnapshot(snapshot);
     s = reduceEvent(s, { type: "finding", data: { finding } });
     s = beginRun(s, "run_2", "mug");
     expect(s.runId).toBe("run_2");
     expect(s.running).toBe(true);
     expect(s.stages.load.status).toBe("pending");
-    expect(s.objects.mug.findings).toEqual([finding]);
-    expect(s.objects.mug.status).toBe("checking");
+    expect(s.objects.mug.findings).toEqual([]);
   });
 
   it("tracks stage progress", () => {
@@ -104,5 +103,25 @@ describe("reducer", () => {
     s = applyReview(s, { ...snapshot.objects[1], decision: "approved" }, { ...metrics, time_to_usable_s: 3 });
     expect(s.objects.mug.decision).toBe("approved");
     expect(s.metrics?.time_to_usable_s).toBe(3);
+  });
+
+  const fix = { fix_id: "f1", label: "Lift" };
+
+  it("recordAppliedFix records a fix", () => {
+    const s = recordAppliedFix(initialState(), "mug", fix);
+    expect(s.appliedFixes.mug).toEqual([fix]);
+  });
+
+  it("recordAppliedFix ignores a repeated fix_id", () => {
+    let s = recordAppliedFix(initialState(), "mug", fix);
+    s = recordAppliedFix(s, "mug", fix);
+    expect(s.appliedFixes.mug).toHaveLength(1);
+  });
+
+  it("recordAppliedFix keeps objects separate", () => {
+    let s = recordAppliedFix(initialState(), "mug", fix);
+    s = recordAppliedFix(s, "plate", { fix_id: "f2", label: "Move" });
+    expect(s.appliedFixes.mug).toEqual([fix]);
+    expect(s.appliedFixes.plate).toEqual([{ fix_id: "f2", label: "Move" }]);
   });
 });
