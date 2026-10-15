@@ -36,14 +36,23 @@ describe("reducer", () => {
     expect(s.runId).toBe("run_9");
   });
 
-  it("beginRun resets stages and clears the target object's findings", () => {
+  it("beginRun for a full run clears every object's findings", () => {
+    let s = fromSnapshot(snapshot);
+    s = reduceEvent(s, { type: "finding", data: { finding } });
+    s = beginRun(s, "run_3", null);
+    expect(s.objects.mug.findings).toEqual([]);
+    expect(s.objects.mug.status).toBe("checking");
+  });
+
+  it("beginRun resets stages, keeps the rerun object's findings and marks it checking", () => {
     let s = fromSnapshot(snapshot);
     s = reduceEvent(s, { type: "finding", data: { finding } });
     s = beginRun(s, "run_2", "mug");
     expect(s.runId).toBe("run_2");
     expect(s.running).toBe(true);
     expect(s.stages.load.status).toBe("pending");
-    expect(s.objects.mug.findings).toEqual([]);
+    expect(s.objects.mug.findings).toEqual([finding]);
+    expect(s.objects.mug.status).toBe("checking");
   });
 
   it("tracks stage progress", () => {

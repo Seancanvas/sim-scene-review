@@ -29,11 +29,18 @@ export function fromSnapshot(snapshot: Snapshot): ViewState {
   };
 }
 
-/** A new run starts: stages reset; an object rerun clears only that object. */
+/**
+ * A new run starts and the stages reset. A full run clears every object's findings. An object
+ * rerun keeps the previous findings on screen (marked checking) until the run completes and the
+ * snapshot replaces them, so the fix button stays pressable — a second press is what the server
+ * deduplicates.
+ */
 export function beginRun(state: ViewState, runId: string, onlyObject: string | null): ViewState {
   const objects = { ...state.objects };
   for (const name of onlyObject ? [onlyObject] : state.order) {
-    if (objects[name]) objects[name] = { ...objects[name], status: "checking", findings: [] };
+    if (objects[name]) {
+      objects[name] = { ...objects[name], status: "checking", findings: onlyObject ? objects[name].findings : [] };
+    }
   }
   return { ...state, runId, running: true, stages: freshStages(), error: null, objects };
 }

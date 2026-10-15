@@ -1,7 +1,8 @@
 :root { color-scheme: light; font-family: system-ui, sans-serif; --ok: #30a46c; --warn: #f5a524; --err: #e5484d; --muted: #8b8d98; --line: #e2e3e8; }
 * { box-sizing: border-box; }
 body { margin: 0; background: #f7f7f9; color: #1c1d22; }
-.app { display: grid; grid-template-rows: auto auto auto 1fr auto; height: 100vh; }
+.app { display: flex; flex-direction: column; height: 100vh; }
+header, .notice, .stages, .metrics { flex: none; }
 header { display: flex; gap: 12px; align-items: center; padding: 10px 16px; border-bottom: 1px solid var(--line); background: #fff; }
 header h1 { font-size: 18px; margin: 0 16px 0 0; }
 button { font: inherit; padding: 6px 12px; border: 1px solid var(--line); border-radius: 6px; background: #fff; cursor: pointer; }
@@ -20,7 +21,7 @@ button.secondary { margin-left: auto; }
 .stage.failed { border-color: var(--err); }
 .stage-name { display: block; font-weight: 600; }
 .stage-meta { color: var(--muted); font-size: 12px; }
-main { display: grid; grid-template-columns: 1fr 360px; min-height: 0; }
+main { display: grid; grid-template-columns: 1fr 360px; flex: 1; min-height: 0; }
 .viewport, .viewport-placeholder { position: relative; min-height: 0; background: #e9eaef; display: grid; place-items: center; color: var(--muted); }
 .panel { overflow: auto; border-left: 1px solid var(--line); background: #fff; }
 .object-list { list-style: none; margin: 0; padding: 8px; }
