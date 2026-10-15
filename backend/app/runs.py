@@ -61,6 +61,11 @@ class RunRecord:
             return self._events[last_id:]
 
     @property
+    def failed(self) -> bool:
+        with self._cond:
+            return self.done and bool(self._events) and self._events[-1].type == "run_failed"
+
+    @property
     def last_id(self) -> int:
         with self._cond:
             return len(self._events)

@@ -39,6 +39,11 @@ def _scene(reg: Registry, scene_id: str):
     return scene
 
 
+def _active_run(reg: Registry, scene):
+    run = reg.run(scene.current_run_id) if scene.current_run_id else None
+    return run if run is not None and not run.done else None
+
+
 def _start(request: Request, scene, run, **kwargs) -> None:
     task = asyncio.create_task(asyncio.to_thread(pipeline.execute, scene, run, **kwargs))
     tasks = request.app.state.tasks
@@ -107,8 +112,10 @@ async def get_scene(scene_id: str, reg: Registry = Depends(registry)):
 @router.post("/scenes/{scene_id}/runs", status_code=202)
 async def start_run(scene_id: str, request: Request, reg: Registry = Depends(registry)):
     scene = _scene(reg, scene_id)
-    run = reg.add_run(scene_id)
     with scene.lock:
+        if _active_run(reg, scene) is not None:
+            raise ApiError(409, "run_in_progress", "wait for the current run to finish")
+        run = reg.add_run(scene_id)
         scene.current_run_id = run.run_id
     _start(request, scene, run)
     return {"run_id": run.run_id}
@@ -123,8 +130,16 @@ async def fix_object(scene_id: str, name: str, body: FixBody, request: Request, 
         key = idempotency_key(scene.version, name, body.fix_id)
         cached = scene.fix_runs.get(key)
         if cached is not None:
-            scene.saved += rerun_cost()
-            return {"run_id": cached, "cached": True}
+            previous = reg.run(cached)
+            if previous is None or previous.failed:
+                # a failed run produced nothing worth reusing
+                for stale in [k for k, v in scene.fix_runs.items() if v == cached]:
+                    del scene.fix_runs[stale]
+            else:
+                scene.saved += rerun_cost()
+                return {"run_id": cached, "cached": True}
+        if _active_run(reg, scene) is not None:
+            raise ApiError(409, "run_in_progress", "wait for the current run to finish")
         try:
             xml = apply_fix(scene.xml, name, body.fix_id)
         except SceneError as e:
@@ -170,7 +185,7 @@ async def run_events(run_id: str, request: Request, reg: Registry = Depends(regi
     if run is None:
         raise ApiError(404, "run_not_found", f"no run {run_id}")
     try:
-        last_id = int(request.headers.get("last-event-id", "0") or 0)
+        last_id = max(0, int(request.headers.get("last-event-id", "0") or 0))
     except ValueError:
         last_id = 0
     return StreamingResponse(

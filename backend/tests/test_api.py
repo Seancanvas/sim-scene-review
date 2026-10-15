@@ -153,3 +153,50 @@ def test_review_and_time_to_usable(client):
     for name in client.get(f"/api/scenes/{scene_id}").json()["objects"]:
         res = client.post(f"/api/scenes/{scene_id}/objects/{name['name']}/review", json={"decision": "approve"})
     assert res.json()["metrics"]["time_to_usable_s"] is not None
+
+
+def test_failed_fix_is_not_cached(client, monkeypatch):
+    scene_id = create_tabletop(client)
+    start_and_finish(client, scene_id)
+
+    def failing(scene, run, **kwargs):
+        run.emit("run_failed", {"stage": "load", "code": "internal_error", "message": "boom"})
+        run.finish()
+
+    with monkeypatch.context() as m:
+        m.setattr("app.api.pipeline.execute", failing)
+        first = client.post(f"/api/scenes/{scene_id}/objects/mug_a/fix", json={"fix_id": "recompute_mass"})
+        assert sse_events(client, first.json()["run_id"])[-1]["type"] == "run_failed"
+    second = client.post(f"/api/scenes/{scene_id}/objects/mug_a/fix", json={"fix_id": "recompute_mass"})
+    assert second.status_code == 202 and second.json()["cached"] is False
+    assert second.json()["run_id"] != first.json()["run_id"]
+    assert sse_events(client, second.json()["run_id"])[-1]["type"] == "run_completed"
+    assert client.get(f"/api/scenes/{scene_id}").json()["metrics"]["saved_by_idempotency"] == 0
+
+
+def test_concurrent_full_runs_conflict(client):
+    scene_id = create_tabletop(client)
+    first = client.post(f"/api/scenes/{scene_id}/runs")
+    second = client.post(f"/api/scenes/{scene_id}/runs")
+    assert second.status_code == 409 and second.json()["error"]["code"] == "run_in_progress"
+    assert sse_events(client, first.json()["run_id"])[-1]["type"] == "run_completed"
+    assert client.post(f"/api/scenes/{scene_id}/runs").status_code == 202
+
+
+def test_fix_during_run_conflicts_but_repeat_is_cached(client):
+    scene_id = create_tabletop(client)
+    start_and_finish(client, scene_id)
+    first = client.post(f"/api/scenes/{scene_id}/objects/mug_a/fix", json={"fix_id": "recompute_mass"})
+    other = client.post(f"/api/scenes/{scene_id}/objects/plate/fix", json={"fix_id": "enable_collision"})
+    assert other.status_code == 409 and other.json()["error"]["code"] == "run_in_progress"
+    again = client.post(f"/api/scenes/{scene_id}/objects/mug_a/fix", json={"fix_id": "recompute_mass"})
+    assert again.status_code == 202 and again.json()["cached"] is True
+    sse_events(client, first.json()["run_id"])
+
+
+def test_last_event_id_is_clamped(client):
+    scene_id = create_tabletop(client)
+    run_id, events = start_and_finish(client, scene_id)
+    assert len(sse_events(client, run_id, last_id=-5)) == len(events)
+    with client.stream("GET", f"/api/runs/{run_id}/events", headers={"Last-Event-ID": "abc"}) as res:
+        assert sum(1 for line in res.iter_lines() if line.startswith("id: ")) == len(events)
