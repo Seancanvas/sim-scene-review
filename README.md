@@ -4,7 +4,8 @@ Check a MuJoCo scene before you train or evaluate a robot policy in it.
 Upload an MJCF file (or load the sample), watch three stages stream in,
 then approve, reject or fix-and-rerun each object.
 
-**Live:** _(URL added after the first deploy)_
+**Live:** https://sim-scene-review.onrender.com (free tier: the first
+request after 15 idle minutes takes about 30 s while the service wakes up)
 
 ## What it checks
 
