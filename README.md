@@ -22,6 +22,9 @@ inertia and zero mass, so those surface at stage 1.
 
 ## How it is built
 
+Flow diagrams (components, a run, fix and idempotency, streaming, object
+lifecycle, frontend state) are in [`docs/architecture.md`](docs/architecture.md).
+
 - **Backend** — FastAPI. The scene is compiled once with `mujoco`; the checks
   and the geometry the browser draws read that one compiled model, so what
   you see is what is simulated. Fixes edit the XML through `MjSpec` and the
